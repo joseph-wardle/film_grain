@@ -6,5 +6,6 @@
 
 pub mod cli;
 pub mod io;
+mod color;
 mod prng;
 pub mod rendering;
