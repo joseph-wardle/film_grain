@@ -117,8 +117,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     var g: u32 = 0u;
-    let pixel_count = opts.m_out * opts.n_out;
-    let words_per_pixel = (opts.n_monte_carlo + 31u) / 32u;
     loop {
         if g >= n_cell { break; }
         let x_center = f32(j) + next_f32(&seed);
@@ -152,10 +150,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                             let py = f32(oy) + 0.5;
                             if sq_distance(px, py, x_proj, y_proj) <= r_proj * r_proj {
                                 let pixel_idx = u32(oy) * opts.n_out + u32(ox);
-                                let word = k / 32u;
-                                let bit = k % 32u;
-                                let base = pixel_idx * words_per_pixel + word;
-                                atomicOr(&flags[base], 1u << bit);
+                                atomicAdd(&flags[pixel_idx], 1u);
                             }
                         }
                         ox = ox + 1;

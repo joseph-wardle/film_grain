@@ -69,8 +69,7 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
     });
 
     let num_pixels = (opts.m_out * opts.n_out) as usize;
-    let words_per_pixel = (opts.n_monte_carlo + 31) / 32;
-    let flags_size = num_pixels * words_per_pixel * 4;
+    let flags_size = num_pixels * 4;
     // Zero-initialized buffer for Monte Carlo flags
     let zero_flags = vec![0u8; flags_size];
     let flags_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -241,12 +240,7 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
 
     let mut result = vec![0f32; num_pixels];
     for i in 0..num_pixels {
-        let mut count = 0u32;
-        for w in 0..words_per_pixel {
-            let word = flags[i * words_per_pixel + w];
-            count += word.count_ones();
-        }
-        result[i] = count as f32 / opts.n_monte_carlo as f32;
+        result[i] = flags[i] as f32 / opts.n_monte_carlo as f32;
     }
 
     Array2::from_shape_vec((opts.m_out, opts.n_out), result).expect("shape error")
