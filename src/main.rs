@@ -40,7 +40,8 @@ fn main() {
     let image_out = match args.algorithm {
         RenderingAlgorithm::GrainWise => render_grain_wise(&image_in, &opts),
         RenderingAlgorithm::PixelWise => render_pixel_wise(&image_in, &opts),
-        RenderingAlgorithm::Gpu => gpu::render_pixel_wise(&image_in, &opts),
+        RenderingAlgorithm::GpuPixelWise => gpu::render_pixel_wise(&image_in, &opts),
+        RenderingAlgorithm::GpuGrainWise => gpu::render_grain_wise(&image_in, &opts),
         RenderingAlgorithm::Automatic => {
             // Use grain-wise if grain radius is large; otherwise, pixel-wise.
             if opts.grain_radius > 1.0 {

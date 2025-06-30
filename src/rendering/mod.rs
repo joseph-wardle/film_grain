@@ -9,7 +9,8 @@ use clap::ValueEnum;
 pub enum RenderingAlgorithm {
     GrainWise,
     PixelWise,
-    Gpu,
+    GpuPixelWise,
+    GpuGrainWise,
     Automatic,
 }
 
