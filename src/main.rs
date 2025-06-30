@@ -1,9 +1,10 @@
 use clap::Parser;
 use film_grain::cli::Cli;
 use film_grain::io::{read_image, write_image};
-use film_grain::rendering::grain_wise::render_grain_wise;
-use film_grain::rendering::pixel_wise::render_pixel_wise;
+use film_grain::rendering::cpu::grain_wise::render_grain_wise;
+use film_grain::rendering::cpu::pixel_wise::render_pixel_wise;
 use film_grain::rendering::{FilmGrainOptions, RenderingAlgorithm};
+use film_grain::rendering::gpu;
 
 fn main() {
     // Parse command line arguments.
@@ -39,6 +40,7 @@ fn main() {
     let image_out = match args.algorithm {
         RenderingAlgorithm::GrainWise => render_grain_wise(&image_in, &opts),
         RenderingAlgorithm::PixelWise => render_pixel_wise(&image_in, &opts),
+        RenderingAlgorithm::Gpu => gpu::render_pixel_wise(&image_in, &opts),
         RenderingAlgorithm::Automatic => {
             // Use grain-wise if grain radius is large; otherwise, pixel-wise.
             if opts.grain_radius > 1.0 {
