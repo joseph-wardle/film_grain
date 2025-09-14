@@ -1,5 +1,6 @@
-pub mod grain_wise;
-pub mod pixel_wise;
+pub mod cpu;
+pub mod gpu;
+
 
 use clap::ValueEnum;
 
@@ -8,6 +9,8 @@ use clap::ValueEnum;
 pub enum RenderingAlgorithm {
     GrainWise,
     PixelWise,
+    GpuPixelWise,
+    GpuGrainWise,
     Automatic,
 }
 
