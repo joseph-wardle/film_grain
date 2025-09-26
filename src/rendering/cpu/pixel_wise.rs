@@ -3,9 +3,15 @@ use crate::rendering::{sq_distance, FilmGrainOptions};
 use ndarray::Array2;
 use rayon::prelude::*;
 use std::f32::consts::PI;
+use tracing::{debug, instrument, trace};
 
 /// Renders a single output pixel using the pixel-wise algorithm.
 /// This function uses precomputed Monte Carlo offsets and a lambda lookup table.
+#[instrument(
+    level = "trace",
+    skip(img_in, opts, x_offset_list, y_offset_list, lambda_lookup),
+    fields(output_row = y_out, output_col = x_out)
+)]
 fn render_pixel(
     img_in: &Array2<f32>,
     y_out: usize,
@@ -75,6 +81,12 @@ fn render_pixel(
                 } else {
                     0
                 };
+                trace!(
+                    cell = ?(cell_x, cell_y),
+                    grains = n_cell,
+                    lambda = curr_lambda,
+                    "Sampled grain count for cell"
+                );
 
                 for _ in 0..(n_cell as usize) {
                     let x_center = cell_corner_x + cell_size * cell_rng.next_f32();
@@ -94,6 +106,7 @@ fn render_pixel(
                         < curr_radius * curr_radius
                     {
                         success_count += 1;
+                        trace!("Monte Carlo sample hit grain");
                         break 'cell_loop;
                     }
                 }
@@ -104,7 +117,10 @@ fn render_pixel(
 }
 
 /// Render the entire image using the pixel-wise film grain rendering algorithm.
+#[instrument(level = "info", skip(img_in, opts))]
 pub fn render_pixel_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array2<f32> {
+    debug!(?opts, "Starting pixel-wise CPU rendering");
+    debug!("Precomputing Monte Carlo offsets");
     // Generate Monte Carlo translation offsets using the PRNG.
     let mut prng = Prng::new(opts.grain_seed);
     let n_mc = opts.n_monte_carlo;
@@ -121,6 +137,7 @@ pub fn render_pixel_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array
     const EPSILON: f32 = 0.1;
     let cell_size = 1.0 / ((1.0 / opts.grain_radius).ceil());
     let mut lambda_lookup = vec![0.0f32; MAX_GREY_LEVEL + 1];
+    debug!("Computing lambda lookup table");
     lambda_lookup
         .iter_mut()
         .enumerate()
@@ -138,6 +155,11 @@ pub fn render_pixel_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array
 
     // Create the output image and compute each pixel in parallel.
     let mut img_out = Array2::<f32>::zeros((opts.m_out, opts.n_out));
+    debug!(
+        rows = opts.m_out,
+        cols = opts.n_out,
+        "Rendering output image in parallel"
+    );
     img_out
         .indexed_iter_mut()
         .par_bridge()
@@ -152,5 +174,6 @@ pub fn render_pixel_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array
                 &lambda_lookup,
             );
         });
+    debug!("Completed pixel-wise rendering");
     img_out
 }
