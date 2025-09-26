@@ -1,7 +1,8 @@
-use ndarray::Array2;
-use wgpu::util::DeviceExt;
 use crate::prng::Prng;
 use crate::rendering::FilmGrainOptions;
+use ndarray::Array2;
+use tracing::{debug, info, instrument, trace};
+use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -23,13 +24,18 @@ struct GpuOptions {
     y_b: f32,
 }
 
+#[instrument(level = "info", skip(img_in, opts))]
 pub fn render_grain_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array2<f32> {
+    info!(?opts, "Starting GPU grain-wise rendering");
     pollster::block_on(render_grain_wise_async(img_in, opts))
 }
 
+#[instrument(level = "info", skip(img_in, opts))]
 async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array2<f32> {
     /* ---------- WGPU setup ---------- */
+    trace!("Creating WGPU instance");
     let instance = wgpu::Instance::default();
+    trace!("Requesting GPU adapter");
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -38,20 +44,21 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
         })
         .await
         .expect("No suitable GPU adapters found");
+    debug!("Adapter acquired");
     let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: Default::default(),
-                required_limits: Default::default(),
-                memory_hints: Default::default(),
-                trace: Default::default(),
-            },
-        )
+        .request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: Default::default(),
+            required_limits: Default::default(),
+            memory_hints: Default::default(),
+            trace: Default::default(),
+        })
         .await
         .expect("Failed to create device");
+    debug!("Device and queue created");
 
     /* ---------- Pre-compute offsets ---------- */
+    debug!("Preparing Monte Carlo offsets for GPU execution");
     let mut prng = Prng::new(opts.grain_seed);
     let n_mc = opts.n_monte_carlo;
     let (mut x_offsets, mut y_offsets) = (Vec::with_capacity(n_mc), Vec::with_capacity(n_mc));
@@ -61,6 +68,7 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
     }
 
     /* ---------- Buffers ---------- */
+    trace!("Creating GPU buffers");
     let img_in_flat = img_in.as_slice().unwrap();
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("img_in"),
@@ -120,6 +128,7 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
     });
 
     /* ---------- Bind group & pipeline ---------- */
+    trace!("Configuring bind group layout");
     let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("layout"),
         entries: &[
@@ -184,14 +193,30 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
         label: Some("bind_group"),
         layout: &bind_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: flags_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: x_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: y_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 4, resource: opts_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: flags_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: x_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: y_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: opts_buf.as_entire_binding(),
+            },
         ],
     });
 
+    trace!("Creating compute shader module");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("grain_shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/grain.wgsl").into()),
@@ -203,6 +228,7 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
         push_constant_ranges: &[],
     });
 
+    trace!("Creating compute pipeline");
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("pipeline"),
         layout: Some(&pipeline_layout),
@@ -213,20 +239,28 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
     });
 
     /* ---------- Dispatch ---------- */
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("encoder") });
+    trace!("Encoding compute pass");
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("encoder"),
+    });
     {
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("cpass"), timestamp_writes: None });
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("cpass"),
+            timestamp_writes: None,
+        });
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
         let wg_size = 16u32;
         let dispatch_x = (img_in.shape()[1] as u32 + wg_size - 1) / wg_size;
         let dispatch_y = (img_in.shape()[0] as u32 + wg_size - 1) / wg_size;
+        debug!(dispatch_x, dispatch_y, "Dispatching grain-wise workload");
         cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
     }
     encoder.copy_buffer_to_buffer(&flags_buf, 0, &read_back, 0, flags_size as u64);
     queue.submit(Some(encoder.finish()));
 
     /* ---------- Read-back and aggregate ---------- */
+    trace!("Mapping results for read-back");
     let slice = read_back.slice(..);
     let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
     slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
@@ -239,6 +273,7 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
     read_back.unmap();
 
     let mut result = vec![0f32; num_pixels];
+    trace!("Aggregating Monte Carlo flags");
     for i in 0..num_pixels {
         result[i] = flags[i] as f32 / opts.n_monte_carlo as f32;
     }

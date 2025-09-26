@@ -1,7 +1,6 @@
 pub mod cpu;
 pub mod gpu;
 
-
 use clap::ValueEnum;
 
 /// Specifies which rendering algorithm to use.
