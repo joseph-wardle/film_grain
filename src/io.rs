@@ -19,7 +19,6 @@ pub fn read_image(path: &str) -> Array2<f32> {
         .enumerate()
         .map(|(idx, p)| {
             let value = p.0[0] as f32 / 255.0;
-            trace!(pixel_index = idx, value, "Normalised pixel intensity");
             value
         })
         .collect();

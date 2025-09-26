@@ -51,7 +51,6 @@ fn render_pixel(
     let mut success_count = 0;
     // Loop over Monte Carlo iterations.
     for i in 0..opts.n_monte_carlo {
-        trace!(iteration = i, "Evaluating Monte Carlo sample");
         let x_shifted = x_in + opts.sigma_filter * (x_offset_list[i] / s_x);
         let y_shifted = y_in + opts.sigma_filter * (y_offset_list[i] / s_y);
 

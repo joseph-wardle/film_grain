@@ -34,7 +34,6 @@ pub fn render_grain_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array
     debug!(n_mc, "Generating Monte Carlo offsets");
     let monte_carlo_offsets: Vec<(f32, f32)> = (0..n_mc)
         .map(|iteration| {
-            trace!(iteration, "Sampling Monte Carlo offset");
             (prng.next_standard_normal(), prng.next_standard_normal())
         })
         .collect();
@@ -123,7 +122,6 @@ pub fn render_grain_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array
 
                 // For each Monte Carlo iteration, update the corresponding atomic image.
                 for (k, atomic_image) in mc_atomic_images.iter().enumerate() {
-                    trace!(mc_iteration = k, "Projecting grain to output space");
                     let (offset_x, offset_y) = monte_carlo_offsets[k];
                     // Apply the Gaussian offset.
                     let x_center_shifted = x_center - (offset_x / s_x);
