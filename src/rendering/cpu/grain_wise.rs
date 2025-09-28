@@ -33,9 +33,7 @@ pub fn render_grain_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array
     let n_mc = opts.n_monte_carlo;
     debug!(n_mc, "Generating Monte Carlo offsets");
     let monte_carlo_offsets: Vec<(f32, f32)> = (0..n_mc)
-        .map(|iteration| {
-            (prng.next_standard_normal(), prng.next_standard_normal())
-        })
+        .map(|iteration| (prng.next_standard_normal(), prng.next_standard_normal()))
         .collect();
 
     // Compute parameters for the grain radius distribution.

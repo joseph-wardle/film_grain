@@ -16,7 +16,7 @@ fn main() {
     debug!(?args, "Parsed CLI arguments");
 
     // Read input image.
-    info!(input = %args.input, "Reading input image");
+    info!(input = ?args.input, "Reading input image");
     let image_in = read_image(&args.input);
     info!(
         rows = image_in.shape()[0],
@@ -26,10 +26,10 @@ fn main() {
 
     // Determine default region and output dimensions if not provided.
     let (img_rows, img_cols) = (image_in.shape()[0] as f32, image_in.shape()[1] as f32);
-    let x_b = args.x_b.unwrap_or(img_cols);
-    let y_b = args.y_b.unwrap_or(img_rows);
-    let m_out = args.height.unwrap_or((img_rows * args.zoom) as u32) as usize;
-    let n_out = args.width.unwrap_or((img_cols * args.zoom) as u32) as usize;
+    let x_b = args.region_max_x.unwrap_or(img_cols);
+    let y_b = args.region_max_y.unwrap_or(img_rows);
+    let m_out = args.output_height.unwrap_or((img_rows * args.zoom) as u32) as usize;
+    let n_out = args.output_width.unwrap_or((img_cols * args.zoom) as u32) as usize;
     if m_out == 0 || n_out == 0 {
         warn!(
             output_rows = m_out,
@@ -40,8 +40,8 @@ fn main() {
     debug!(
         input_rows = img_rows,
         input_cols = img_cols,
-        region_x_a = args.x_a,
-        region_y_a = args.y_a,
+        region_x_a = args.region_min_x,
+        region_y_a = args.region_min_y,
         region_x_b = x_b,
         region_y_b = y_b,
         output_rows = m_out,
@@ -51,13 +51,13 @@ fn main() {
 
     // Set up rendering options.
     let opts = FilmGrainOptions {
-        grain_radius: args.mu_r,
-        sigma_r: args.sigma_r,
-        sigma_filter: args.sigma_filter,
-        n_monte_carlo: args.n_monte_carlo as usize,
-        grain_seed: args.seed,
-        x_a: args.x_a,
-        y_a: args.y_a,
+        grain_radius: args.average_grain_radius,
+        sigma_r: args.grain_radius_stddev_factor,
+        sigma_filter: args.gaussian_filter_stddev,
+        n_monte_carlo: args.monte_carlo_sample_count as usize,
+        grain_seed: args.rng_seed,
+        x_a: args.region_min_x,
+        y_a: args.region_min_y,
         x_b,
         y_b,
         m_out,
@@ -100,9 +100,9 @@ fn main() {
     info!(duration_ms = elapsed_time.as_millis(), "Rendering finished");
 
     // Write the rendered output image.
-    info!(output = %args.output, "Writing rendered image to disk");
+    info!(output = ?args.output, "Writing rendered image to disk");
     if let Err(err) = write_image(&args.output, &image_out) {
-        error!(?err, path = %args.output, "Failed to write output image");
+        error!(?err, path = ?args.output, "Failed to write output image");
         std::process::exit(1);
     }
     info!("Film grain rendering completed successfully");

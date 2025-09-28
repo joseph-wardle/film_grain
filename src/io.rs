@@ -1,11 +1,11 @@
 use image::{GrayImage, Luma};
 use ndarray::Array2;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, trace, warn};
 
 /// Reads a grayscale image from the given file path and normalizes pixel values to [0, 1].
 #[tracing::instrument(level = "info")]
-pub fn read_image(path: &str) -> Array2<f32> {
+pub fn read_image(path: &PathBuf) -> Array2<f32> {
     debug!("Opening image from disk");
     let img = image::open(path).unwrap_or_else(|err| {
         error!(?err, "Failed to open input image");
