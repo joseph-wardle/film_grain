@@ -14,12 +14,9 @@ use std::path::PathBuf;
 use std::sync::{Once, OnceLock};
 
 use tracing::info;
-use tracing_appender::non_blocking::{self, WorkerGuard};
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
-    filter::LevelFilter,
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
+    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, Layer,
 };
 
 pub fn init_logging() {
@@ -39,7 +36,7 @@ pub fn init_logging() {
         // Non-blocking file writer
         let file = fs::File::create(&path)
             .unwrap_or_else(|e| panic!("failed to create log file {}: {e}", path.display()));
-        let (file_writer, guard) = non_blocking::non_blocking(file);
+        let (file_writer, guard) = tracing_appender::non_blocking(file);
         let _ = GUARD.set(guard); // keep worker thread alive for the program lifetime
 
         // Console layer: INFO and above
@@ -48,7 +45,7 @@ pub fn init_logging() {
             .with_thread_ids(true)
             .with_thread_names(true)
             .with_ansi(true)
-            .with_writer(std::io::stdout)  // print to console
+            .with_writer(std::io::stdout) // print to console
             .with_filter(LevelFilter::INFO);
 
         // File layer: TRACE and above (everything)
@@ -56,8 +53,8 @@ pub fn init_logging() {
             .with_target(true)
             .with_thread_ids(true)
             .with_thread_names(true)
-            .with_ansi(false)               // no color codes in file
-            .with_writer(file_writer)       // write to our file
+            .with_ansi(false) // no color codes in file
+            .with_writer(file_writer) // write to our file
             .with_filter(LevelFilter::TRACE);
 
         tracing_subscriber::registry()
@@ -65,6 +62,9 @@ pub fn init_logging() {
             .with(file_layer)
             .init();
 
-        info!("Tracing initialized. Console: INFO+. File (TRACE+): {}", path.display());
+        info!(
+            "Tracing initialized. Console: INFO+. File (TRACE+): {}",
+            path.display()
+        );
     });
 }
