@@ -19,21 +19,21 @@ pub struct FilmGrainOptions {
     /// Average grain radius (µ_r) in input image units.
     pub grain_radius: f32,
     /// Standard deviation of the grain radius (σ_r) as a fraction of µ_r.
-    pub sigma_r: f32,
+    pub grain_radius_stddev_factor: f32,
     /// Standard deviation of the Gaussian filter (σ_filter) in output pixels.
-    pub sigma_filter: f32,
+    pub gaussian_filter_stddev: f32,
     /// Number of Monte Carlo iterations.
-    pub n_monte_carlo: usize,
+    pub monte_carlo_sample_count: usize,
     /// Seed offset used for seeding cell–specific PRNGs.
-    pub grain_seed: u32,
+    pub grain_seed_offset: u32,
     /// Rendering region in the input image (top-left: (x_a, y_a), bottom–right: (x_b, y_b)).
-    pub x_a: f32,
-    pub y_a: f32,
-    pub x_b: f32,
-    pub y_b: f32,
+    pub input_region_min_x: f32,
+    pub input_region_min_y: f32,
+    pub input_region_max_x: f32,
+    pub input_region_max_y: f32,
     /// Output image dimensions (rows: m_out, columns: n_out).
-    pub m_out: usize,
-    pub n_out: usize,
+    pub output_height: usize,
+    pub output_width: usize,
 }
 
 /// Returns the squared Euclidean distance between (x1, y1) and (x2, y2).

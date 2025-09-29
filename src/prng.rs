@@ -19,13 +19,13 @@ impl Prng {
     /// Wang hash: a simple hash function to scramble the seed.
     #[instrument(level = "trace")]
     fn wang_hash(seed: u32) -> u32 {
-        let mut seed = seed;
-        seed = (seed ^ 61) ^ (seed >> 16);
-        seed = seed.wrapping_mul(9);
-        seed ^= seed >> 4;
-        seed = seed.wrapping_mul(668_265_261);
-        seed ^= seed >> 15;
-        seed
+        let mut hash = seed;
+        hash = (hash ^ 61) ^ (hash >> 16);
+        hash = hash.wrapping_mul(9);
+        hash ^= hash >> 4;
+        hash = hash.wrapping_mul(668_265_261);
+        hash ^= hash >> 15;
+        hash
     }
 
     /// Generates the next random u32 and updates the internal state.
@@ -48,9 +48,9 @@ impl Prng {
     /// Returns a standard normally distributed random number (mean 0, std dev 1) using Box–Muller.
     #[instrument(level = "trace", skip(self))]
     pub fn next_standard_normal(&mut self) -> f32 {
-        let u = self.next_f32();
-        let v = self.next_f32();
-        let result = (-2.0 * u.ln()).sqrt() * (2.0 * PI * v).cos();
+        let radius_uniform = self.next_f32();
+        let angle_uniform = self.next_f32();
+        let result = (-2.0 * radius_uniform.ln()).sqrt() * (2.0 * PI * angle_uniform).cos();
         trace!(result, "Generated standard normal sample");
         result
     }
@@ -58,22 +58,27 @@ impl Prng {
     /// Samples a Poisson–distributed random variable with parameter `lambda`.
     /// An optional precomputed exp(–lambda) may be supplied.
     #[instrument(level = "trace", skip(self))]
-    pub fn next_poisson(&mut self, lambda: f32, prod_in: Option<f32>) -> u32 {
-        let u = self.next_f32();
-        let mut x: u32 = 0;
-        let mut prod = match prod_in {
+    pub fn next_poisson(&mut self, lambda: f32, cached_exponential: Option<f32>) -> u32 {
+        let uniform_sample = self.next_f32();
+        let mut event_count: u32 = 0;
+        let mut poisson_term = match cached_exponential {
             Some(val) if val > 0.0 => val,
             _ => (-lambda).exp(),
         };
-        let mut sum = prod;
-        let limit = (10000.0 * lambda).floor() as u32;
-        while u > sum && x < limit {
-            x += 1;
-            prod = prod * lambda / (x as f32);
-            sum += prod;
+        let mut cumulative_probability = poisson_term;
+        let iteration_limit = (10000.0 * lambda).floor() as u32;
+        while uniform_sample > cumulative_probability && event_count < iteration_limit {
+            event_count += 1;
+            poisson_term = poisson_term * lambda / (event_count as f32);
+            cumulative_probability += poisson_term;
         }
-        trace!(lambda, u, result = x, "Generated Poisson sample");
-        x
+        trace!(
+            lambda,
+            uniform_sample,
+            result = event_count,
+            "Generated Poisson sample"
+        );
+        event_count
     }
 }
 
@@ -82,10 +87,10 @@ impl Prng {
 #[instrument(level = "trace")]
 pub fn cell_seed(x: u32, y: u32, offset: u32) -> u32 {
     const PERIOD: u32 = 65_536;
-    let s = ((y % PERIOD) * PERIOD + (x % PERIOD)).wrapping_add(offset);
-    if s == 0 {
+    let seed_candidate = ((y % PERIOD) * PERIOD + (x % PERIOD)).wrapping_add(offset);
+    if seed_candidate == 0 {
         1
     } else {
-        s
+        seed_candidate
     }
 }

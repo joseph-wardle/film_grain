@@ -7,31 +7,34 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuOptions {
-    m_in: u32,
-    n_in: u32,
-    m_out: u32,
-    n_out: u32,
-    n_monte_carlo: u32,
-    grain_seed: u32,
-    _pad: [u32; 2],
+    input_height: u32,
+    input_width: u32,
+    output_height: u32,
+    output_width: u32,
+    monte_carlo_sample_count: u32,
+    grain_seed_offset: u32,
+    padding: [u32; 2],
     grain_radius: f32,
-    sigma_r: f32,
-    sigma_filter: f32,
-    _pad2: f32,
-    x_a: f32,
-    y_a: f32,
-    x_b: f32,
-    y_b: f32,
+    grain_radius_stddev_factor: f32,
+    gaussian_filter_stddev_factor: f32,
+    padding_f32: f32,
+    input_region_min_x: f32,
+    input_region_min_y: f32,
+    input_region_max_x: f32,
+    input_region_max_y: f32,
 }
 
-#[instrument(level = "info", skip(img_in, opts))]
-pub fn render_grain_wise(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array2<f32> {
-    info!(?opts, "Starting GPU grain-wise rendering");
-    pollster::block_on(render_grain_wise_async(img_in, opts))
+#[instrument(level = "info", skip(input_image, options))]
+pub fn render_grain_wise(input_image: &Array2<f32>, options: &FilmGrainOptions) -> Array2<f32> {
+    info!(?options, "Starting GPU grain-wise rendering");
+    pollster::block_on(render_grain_wise_async(input_image, options))
 }
 
-#[instrument(level = "info", skip(img_in, opts))]
-async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) -> Array2<f32> {
+#[instrument(level = "info", skip(input_image, options))]
+async fn render_grain_wise_async(
+    input_image: &Array2<f32>,
+    options: &FilmGrainOptions,
+) -> Array2<f32> {
     /* ---------- WGPU setup ---------- */
     trace!("Creating WGPU instance");
     let instance = wgpu::Instance::default();
@@ -59,69 +62,72 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
 
     /* ---------- Pre-compute offsets ---------- */
     debug!("Preparing Monte Carlo offsets for GPU execution");
-    let mut prng = Prng::new(opts.grain_seed);
-    let n_mc = opts.n_monte_carlo;
-    let (mut x_offsets, mut y_offsets) = (Vec::with_capacity(n_mc), Vec::with_capacity(n_mc));
-    for _ in 0..n_mc {
+    let mut prng = Prng::new(options.grain_seed_offset);
+    let sample_count = options.monte_carlo_sample_count;
+    let (mut x_offsets, mut y_offsets) = (
+        Vec::with_capacity(sample_count),
+        Vec::with_capacity(sample_count),
+    );
+    for _ in 0..sample_count {
         x_offsets.push(prng.next_standard_normal());
         y_offsets.push(prng.next_standard_normal());
     }
 
     /* ---------- Buffers ---------- */
     trace!("Creating GPU buffers");
-    let img_in_flat = img_in.as_slice().unwrap();
-    let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let input_flat = input_image.as_slice().unwrap();
+    let input_image_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("img_in"),
-        contents: bytemuck::cast_slice(img_in_flat),
+        contents: bytemuck::cast_slice(input_flat),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
-    let num_pixels = (opts.m_out * opts.n_out) as usize;
+    let num_pixels = (options.output_height * options.output_width) as usize;
     let flags_size = num_pixels * 4;
     // Zero-initialized buffer for Monte Carlo flags
     let zero_flags = vec![0u8; flags_size];
-    let flags_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let monte_carlo_flags_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("flags"),
         contents: &zero_flags,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
-    let read_back = device.create_buffer(&wgpu::BufferDescriptor {
+    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("read_back"),
         size: flags_size as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
 
-    let x_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let x_offset_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("x_offsets"),
         contents: bytemuck::cast_slice(&x_offsets),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    let y_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let y_offset_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("y_offsets"),
         contents: bytemuck::cast_slice(&y_offsets),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
     let opts_gpu = GpuOptions {
-        m_in: img_in.shape()[0] as u32,
-        n_in: img_in.shape()[1] as u32,
-        m_out: opts.m_out as u32,
-        n_out: opts.n_out as u32,
-        n_monte_carlo: opts.n_monte_carlo as u32,
-        grain_seed: opts.grain_seed,
-        _pad: [0, 0],
-        grain_radius: opts.grain_radius,
-        sigma_r: opts.sigma_r,
-        sigma_filter: opts.sigma_filter,
-        _pad2: 0.0,
-        x_a: opts.x_a,
-        y_a: opts.y_a,
-        x_b: opts.x_b,
-        y_b: opts.y_b,
+        input_height: input_image.shape()[0] as u32,
+        input_width: input_image.shape()[1] as u32,
+        output_height: options.output_height as u32,
+        output_width: options.output_width as u32,
+        monte_carlo_sample_count: options.monte_carlo_sample_count as u32,
+        grain_seed_offset: options.grain_seed_offset,
+        padding: [0, 0],
+        grain_radius: options.grain_radius,
+        grain_radius_stddev_factor: options.grain_radius_stddev_factor,
+        gaussian_filter_stddev_factor: options.gaussian_filter_stddev,
+        padding_f32: 0.0,
+        input_region_min_x: options.input_region_min_x,
+        input_region_min_y: options.input_region_min_y,
+        input_region_max_x: options.input_region_max_x,
+        input_region_max_y: options.input_region_max_y,
     };
-    let opts_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let options_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("opts"),
         contents: bytemuck::bytes_of(&opts_gpu),
         usage: wgpu::BufferUsages::UNIFORM,
@@ -195,23 +201,23 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: input_buf.as_entire_binding(),
+                resource: input_image_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: flags_buf.as_entire_binding(),
+                resource: monte_carlo_flags_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: x_buf.as_entire_binding(),
+                resource: x_offset_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: y_buf.as_entire_binding(),
+                resource: y_offset_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
-                resource: opts_buf.as_entire_binding(),
+                resource: options_buffer.as_entire_binding(),
             },
         ],
     });
@@ -240,43 +246,62 @@ async fn render_grain_wise_async(img_in: &Array2<f32>, opts: &FilmGrainOptions) 
 
     /* ---------- Dispatch ---------- */
     trace!("Encoding compute pass");
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    let mut command_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("encoder"),
     });
     {
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        let mut compute_pass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("cpass"),
             timestamp_writes: None,
         });
-        cpass.set_pipeline(&pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
-        let wg_size = 16u32;
-        let dispatch_x = (img_in.shape()[1] as u32 + wg_size - 1) / wg_size;
-        let dispatch_y = (img_in.shape()[0] as u32 + wg_size - 1) / wg_size;
-        debug!(dispatch_x, dispatch_y, "Dispatching grain-wise workload");
-        cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+        let workgroup_size = 16u32;
+        let dispatch_width = (input_image.shape()[1] as u32 + workgroup_size - 1) / workgroup_size;
+        let dispatch_height = (input_image.shape()[0] as u32 + workgroup_size - 1) / workgroup_size;
+        debug!(
+            dispatch_width,
+            dispatch_height, "Dispatching grain-wise workload"
+        );
+        compute_pass.dispatch_workgroups(dispatch_width, dispatch_height, 1);
     }
-    encoder.copy_buffer_to_buffer(&flags_buf, 0, &read_back, 0, flags_size as u64);
-    queue.submit(Some(encoder.finish()));
+    command_encoder.copy_buffer_to_buffer(
+        &monte_carlo_flags_buffer,
+        0,
+        &readback_buffer,
+        0,
+        flags_size as u64,
+    );
+    queue.submit(Some(command_encoder.finish()));
 
     /* ---------- Read-back and aggregate ---------- */
     trace!("Mapping results for read-back");
-    let slice = read_back.slice(..);
-    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-    slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    let readback_slice = readback_buffer.slice(..);
+    let (mapping_sender, mapping_receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    readback_slice.map_async(wgpu::MapMode::Read, move |v| {
+        mapping_sender.send(v).unwrap()
+    });
     device.poll(wgpu::PollType::Wait).expect("poll failed");
-    receiver.receive().await.unwrap().expect("map failed");
+    mapping_receiver
+        .receive()
+        .await
+        .unwrap()
+        .expect("map failed");
 
-    let data = slice.get_mapped_range();
-    let flags: Vec<u32> = bytemuck::cast_slice(&data).to_vec();
-    drop(data);
-    read_back.unmap();
+    let mapped_flags = readback_slice.get_mapped_range();
+    let flags: Vec<u32> = bytemuck::cast_slice(&mapped_flags).to_vec();
+    drop(mapped_flags);
+    readback_buffer.unmap();
 
-    let mut result = vec![0f32; num_pixels];
+    let mut rendered_pixels = vec![0f32; num_pixels];
     trace!("Aggregating Monte Carlo flags");
     for i in 0..num_pixels {
-        result[i] = flags[i] as f32 / opts.n_monte_carlo as f32;
+        rendered_pixels[i] = flags[i] as f32 / options.monte_carlo_sample_count as f32;
     }
 
-    Array2::from_shape_vec((opts.m_out, opts.n_out), result).expect("shape error")
+    Array2::from_shape_vec(
+        (options.output_height, options.output_width),
+        rendered_pixels,
+    )
+    .expect("shape error")
 }

@@ -21,16 +21,16 @@ fn benchmark_rendering(c: &mut Criterion) {
         // Create a default set of rendering options.
         let opts = FilmGrainOptions {
             grain_radius: 0.1,
-            sigma_r: 0.0,
-            sigma_filter: 0.8,
-            n_monte_carlo: 800,
-            grain_seed: rand::rng().random::<u32>(),
-            x_a: 0.0,
-            y_a: 0.0,
-            x_b: image_in.shape()[1] as f32,
-            y_b: image_in.shape()[0] as f32,
-            m_out: image_in.shape()[0],
-            n_out: image_in.shape()[1],
+            grain_radius_stddev_factor: 0.0,
+            gaussian_filter_stddev: 0.8,
+            monte_carlo_sample_count: 800,
+            grain_seed_offset: rand::rng().random::<u32>(),
+            input_region_min_x: 0.0,
+            input_region_min_y: 0.0,
+            input_region_max_x: image_in.shape()[1] as f32,
+            input_region_max_y: image_in.shape()[0] as f32,
+            output_height: image_in.shape()[0],
+            output_width: image_in.shape()[1],
         };
 
         // Benchmark the pixel-wise rendering function for this image.
