@@ -20,9 +20,10 @@ wgpu = "25.0.2"
 
 [dev-dependencies]
 criterion = "0.5.1"
+once_cell = "1.21.3"
 
 [[bench]]
-name = "bench_rendering"
+name = "film_grain"
 harness = false
 
 [profile.release]

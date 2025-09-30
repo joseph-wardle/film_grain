@@ -566,6 +566,7 @@ dependencies = [
  "futures-intrusive",
  "image",
  "ndarray",
+ "once_cell",
  "pollster",
  "rand 0.9.0",
  "rayon",
