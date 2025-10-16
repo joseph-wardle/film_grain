@@ -122,7 +122,6 @@ impl FilmGrainParams {
 
 /// Paper-inspired heuristic: pixel-wise faster when σ_r/μ_r small; grain-wise for larger.
 /// TODO: Decide boundary based on empirical data
-#[expect(dead_code, reason = "Will be called once mode wiring lands")]
 #[instrument(level = "debug")]
 pub fn choose_mode(mu_r: f32, sigma_r: f32) -> FilmGrainMode {
     let ratio = if mu_r > 0.0 { sigma_r / mu_r } else { 1.0 };

@@ -59,8 +59,8 @@ pub fn render_image(img: &DynamicImage, params: &FilmGrainParams) -> Result<Dyna
         }
 
         let out_buf = match params.backend {
-            Backend::CpuSingle => cpu::render_single(&gray, w as usize, h as usize, params)?,
-            Backend::CpuMulti => cpu::render_parallel(&gray, w as usize, h as usize, params)?,
+            Backend::CpuSingle => cpu::render_single(&gray, w, h, params)?,
+            Backend::CpuMulti => cpu::render_parallel(&gray, w, h, params)?,
             #[cfg(feature = "gpu")]
             Backend::Gpu => gpu::render_gpu(&gray, w as usize, h as usize, params)?,
             #[cfg(not(feature = "gpu"))]

@@ -2,7 +2,6 @@ use crate::config::{EPSILON_GREY_LEVEL, MAX_GREY_LEVEL};
 use tracing::{debug, instrument, trace};
 
 /// Precompute λ(i) and exp(-λ(i)) for i∈[0..=255], per §4.4
-#[expect(dead_code, reason = "Used once params/plumbing are connected")]
 #[instrument(level = "debug")]
 pub fn precompute_lambda_tables(mu_r: f32, sigma_r: f32) -> (Vec<f32>, Vec<f32>) {
     let mut lambda = vec![0.0f32; MAX_GREY_LEVEL + 1];
