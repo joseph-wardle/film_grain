@@ -1,14 +1,11 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! filmgrain-core: library for film grain synthesis (CPU + GPU).
+//!
+//! Implements the inhomogeneous Boolean model with Monte-Carlo Gaussian filtering
+//! in two algorithmic modes: **PixelWise** and **GrainWise**.
+//!
+//! # Determinism
+//! CPU is bit-exact given seed & params. GPU is deterministic for a fixed backend/driver
+//! to the extent the backend guarantees, using integer PRNG & explicit barriers.
+mod error;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
 }
