@@ -6,3 +6,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+filmgrain-core = { path = "../filmgrain-core", features = ["gpu"] }
+clap = { version = "4.5.49", features = ["derive"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+image = "0.25.8"
+color-eyre = "0.6.5"
+indicatif = "0.18.0"
