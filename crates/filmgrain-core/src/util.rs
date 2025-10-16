@@ -21,3 +21,15 @@ pub fn precompute_lambda_tables(mu_r: f32, sigma_r: f32) -> (Vec<f32>, Vec<f32>)
     debug!("lambda tables generated");
     (lambda, exp_lambda)
 }
+
+#[inline]
+#[instrument(level = "debug")]
+pub fn hash3_u64(x: u64, y: u64, seed: u64) -> u64 {
+    let mut z = x.wrapping_mul(0x9E3779B185EBCA87)
+        ^ y.wrapping_mul(0xC2B2AE3D27D4EB4F)
+        ^ seed;
+    z ^= z >> 32; z = z.wrapping_mul(0x9E3779B97F4A7C15);
+    z ^= z >> 29; z = z.wrapping_mul(0xBF58476D1CE4E5B9);
+    z ^= z >> 32;
+    z
+}

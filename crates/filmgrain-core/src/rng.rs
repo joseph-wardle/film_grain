@@ -8,7 +8,6 @@ pub struct SplitMix64 {
     state: u64,
 }
 
-#[expect(dead_code, reason = "WIP: API not called yet during set-up")]
 impl SplitMix64 {
     #[instrument(level = "debug")]
     pub fn new(seed: u64) -> Self {
@@ -39,7 +38,6 @@ impl SplitMix64 {
 }
 
 /// Standard normal via Box–Muller using two uniforms; deterministic.
-#[expect(dead_code, reason = "WIP helper, hooked up later")]
 #[instrument(level = "debug")]
 pub fn gaussian_pair(rng: &mut SplitMix64) -> (f32, f32) {
     // Avoid 0
@@ -54,7 +52,6 @@ pub fn gaussian_pair(rng: &mut SplitMix64) -> (f32, f32) {
 
 /// Poisson via inverse transform; optionally pass exp(-λ) to save `exp` calls.
 #[inline]
-#[expect(dead_code, reason = "WIP helper, hooked up later")]
 #[instrument(level = "debug", skip(rng))]
 pub fn poisson_inverse(rng: &mut SplitMix64, lambda: f32, exp_neg_lambda: Option<f32>) -> u32 {
     let l = lambda.max(0.0);
