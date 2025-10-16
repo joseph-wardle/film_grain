@@ -36,8 +36,8 @@ struct Cli {
     seed: u64,
 
     /// Show progress
-    #[arg(long, default_value_t = true)]
-    progress: bool,
+    #[arg(long, value_name = "BOOL", value_parser = ["true", "false"])]
+    progress: Option<bool>,
 
     #[command(subcommand)]
     cmd: Commands,
