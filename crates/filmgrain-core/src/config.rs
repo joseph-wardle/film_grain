@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use tracing::{debug, instrument, trace, warn};
+
 pub const MAX_GREY_LEVEL: usize = 255;
 pub const EPSILON_GREY_LEVEL: f32 = 0.1;
 
@@ -61,19 +63,40 @@ impl Default for FilmGrainParams {
 impl FilmGrainParams {
     /// Validate and finalize parameters given an input image size.
     /// Sets default region (full image) and output size (same as region, unless zoom specified).
+    #[instrument(level = "debug", skip(self))]
     pub fn finalize(&mut self, input_width: u32, input_height: u32) {
+        debug!("finalizing film grain parameters");
+        trace!(?self, input_width, input_height, "initial parameter state");
+
         if self.x_end == 0 || self.y_end == 0 {
             // If region end not set, default to full image
             self.x_start = 0;
             self.y_start = 0;
             self.x_end = input_width;
             self.y_end = input_height;
+            debug!(
+                x_end = self.x_end,
+                y_end = self.y_end,
+                "region end not specified; defaulting to full image"
+            );
         }
+
         // Clamp region to image bounds
+        let original = (self.x_start, self.y_start, self.x_end, self.y_end);
         self.x_start = self.x_start.min(input_width);
         self.y_start = self.y_start.min(input_height);
         self.x_end = self.x_end.min(input_width);
         self.y_end = self.y_end.min(input_height);
+        if original != (self.x_start, self.y_start, self.x_end, self.y_end) {
+            warn!(
+                ?original,
+                x_start = self.x_start,
+                y_start = self.y_start,
+                x_end = self.x_end,
+                y_end = self.y_end,
+                "requested region exceeded image bounds; clamped"
+            );
+        }
         if self.x_end <= self.x_start || self.y_end <= self.y_start {
             panic!(
                 "Invalid region of interest: x_end ({}) must be > x_start ({}), y_end ({}) must be > y_start ({})",
@@ -82,22 +105,33 @@ impl FilmGrainParams {
         }
         let region_width = self.x_end - self.x_start;
         let region_height = self.y_end - self.y_start;
+        debug!(region_width, region_height, "computed region size");
         // If output size not set, default to same as region (no scaling)
         if self.output_width == 0 || self.output_height == 0 {
             self.output_width = region_width;
             self.output_height = region_height;
+            debug!(
+                output_width = self.output_width,
+                output_height = self.output_height,
+                "output dimensions defaulted to region size"
+            );
         }
+        trace!(?self, "finalized parameter state");
     }
 }
 
 /// Paper-inspired heuristic: pixel-wise faster when σ_r/μ_r small; grain-wise for larger.
 /// TODO: Decide boundary based on empirical data
 #[expect(dead_code, reason = "Will be called once mode wiring lands")]
+#[instrument(level = "debug")]
 pub fn choose_mode(mu_r: f32, sigma_r: f32) -> FilmGrainMode {
     let ratio = if mu_r > 0.0 { sigma_r / mu_r } else { 1.0 };
-    if ratio <= 0.35 {
+    debug!(ratio, mu_r, sigma_r, "evaluating mode heuristic");
+    let mode = if ratio <= 0.35 {
         FilmGrainMode::PixelWise
     } else {
         FilmGrainMode::GrainWise
-    }
+    };
+    trace!(?mode, "heuristic selected mode");
+    mode
 }

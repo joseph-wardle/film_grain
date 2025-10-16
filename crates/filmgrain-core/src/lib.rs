@@ -20,7 +20,7 @@ pub use config::{Backend, FilmGrainMode, FilmGrainParams};
 pub use error::{Error, Result};
 
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgb, RgbImage};
-use tracing::instrument;
+use tracing::{debug, info, instrument, trace};
 
 /// Render a single-channel (luma) or 3-channel image with film grain.
 /// If input is RGB, grain is applied **independently per channel** per §5.2 of the paper.
@@ -28,6 +28,15 @@ use tracing::instrument;
 pub fn render_image(img: &DynamicImage, params: &FilmGrainParams) -> Result<DynamicImage> {
     let (w, h) = img.dimensions();
     let mut out: RgbImage = ImageBuffer::new(params.output_width, params.output_height);
+
+    info!(width = w, height = h, "starting film grain render");
+    debug!(
+        backend = ?params.backend,
+        mode = ?params.mode,
+        output_width = params.output_width,
+        output_height = params.output_height,
+        "render configuration captured"
+    );
 
     // Split channels; process independently (color grain)
     let rgb = img.to_rgb8();
@@ -38,6 +47,7 @@ pub fn render_image(img: &DynamicImage, params: &FilmGrainParams) -> Result<Dyna
     ];
 
     for c in 0..3 {
+        trace!(channel = c, "processing color channel");
         // Normalize to [0, 1) like u/(umax + ε)
         let mut gray = vec![0.0f32; (w * h) as usize];
         for y in 0..h {
@@ -61,6 +71,7 @@ pub fn render_image(img: &DynamicImage, params: &FilmGrainParams) -> Result<Dyna
     }
 
     // Recompose & scale back to 8-bit
+    trace!("recomposing RGB image from channels");
     for y in 0..params.output_height {
         for x in 0..params.output_width {
             let idx = (y * params.output_width + x) as usize;
@@ -74,5 +85,6 @@ pub fn render_image(img: &DynamicImage, params: &FilmGrainParams) -> Result<Dyna
         }
     }
 
+    info!("film grain render completed");
     Ok(DynamicImage::ImageRgb8(out))
 }
