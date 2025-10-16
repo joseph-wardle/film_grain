@@ -10,6 +10,7 @@
 mod config;
 mod error;
 mod rng;
+mod util;
 
 pub mod cpu;
 #[cfg(feature = "gpu")]
