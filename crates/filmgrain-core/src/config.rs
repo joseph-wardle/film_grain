@@ -75,7 +75,10 @@ impl FilmGrainParams {
         self.x_end = self.x_end.min(input_width);
         self.y_end = self.y_end.min(input_height);
         if self.x_end <= self.x_start || self.y_end <= self.y_start {
-            panic!("Invalid region of interest specified (x_end <= x_start or y_end <= y_start)");
+            panic!(
+                "Invalid region of interest: x_end ({}) must be > x_start ({}), y_end ({}) must be > y_start ({})",
+                self.x_end, self.x_start, self.y_end, self.y_start
+            );
         }
         let region_width = self.x_end - self.x_start;
         let region_height = self.y_end - self.y_start;
