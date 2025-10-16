@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+gpu = []
+default = ["gpu"]
+
 [dependencies]
+tracing = "0.1.41"
+image = "0.25.8"
 thiserror = "1.0.69"
 serde = { version = "1.0.228", features = ["derive"] }

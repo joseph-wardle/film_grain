@@ -1,0 +1,5 @@
+#[instrument(skip(gray01, params))]
+pub fn render_gpu(
+    gray01: &[f32], w: usize, h: usize, params: &FilmGrainParams
+) -> Result<Vec<f32>> {
+}
