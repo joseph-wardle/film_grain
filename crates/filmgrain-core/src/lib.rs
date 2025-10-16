@@ -16,7 +16,7 @@ pub mod cpu;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
-pub use config::{FilmGrainMode, FilmGrainParams, Backend};
+pub use config::{Backend, FilmGrainMode, FilmGrainParams};
 pub use error::{Error, Result};
 
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgb, RgbImage};
@@ -25,12 +25,9 @@ use tracing::instrument;
 /// Render a single-channel (luma) or 3-channel image with film grain.
 /// If input is RGB, grain is applied **independently per channel** per §5.2 of the paper.
 #[instrument(skip(img))]
-pub fn render_image(
-    img: &DynamicImage,
-    params: &FilmGrainParams,
-) -> Result<DynamicImage> {
+pub fn render_image(img: &DynamicImage, params: &FilmGrainParams) -> Result<DynamicImage> {
     let (w, h) = img.dimensions();
-    let mut out: RgbImage = ImageBuffer::new(params.output_width as u32, params.output_height as u32);
+    let mut out: RgbImage = ImageBuffer::new(params.output_width, params.output_height);
 
     // Split channels; process independently (color grain)
     let rgb = img.to_rgb8();
@@ -67,12 +64,12 @@ pub fn render_image(
     for y in 0..params.output_height {
         for x in 0..params.output_width {
             let idx = (y * params.output_width + x) as usize;
-            let r = (chan_outs[0][idx] * (255.0 + config::EPSILON_GREY_LEVEL))
-                .clamp(0.0, 255.0) as u8;
-            let g = (chan_outs[1][idx] * (255.0 + config::EPSILON_GREY_LEVEL))
-                .clamp(0.0, 255.0) as u8;
-            let b = (chan_outs[2][idx] * (255.0 + config::EPSILON_GREY_LEVEL))
-                .clamp(0.0, 255.0) as u8;
+            let r =
+                (chan_outs[0][idx] * (255.0 + config::EPSILON_GREY_LEVEL)).clamp(0.0, 255.0) as u8;
+            let g =
+                (chan_outs[1][idx] * (255.0 + config::EPSILON_GREY_LEVEL)).clamp(0.0, 255.0) as u8;
+            let b =
+                (chan_outs[2][idx] * (255.0 + config::EPSILON_GREY_LEVEL)).clamp(0.0, 255.0) as u8;
             out.put_pixel(x, y, Rgb([r, g, b]));
         }
     }

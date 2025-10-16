@@ -21,20 +21,20 @@ pub enum FilmGrainMode {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FilmGrainParams {
-    pub grain_size: f32,          // average grain radius (mu_R)
-    pub grain_size_std_dev: f32,  // standard deviation of grain radius (sigma_R)
-    pub blur_sigma: f32,          // standard deviation of the low-pass filter (sigmaFilter)
-    pub n_monte_carlo: u32,       // number of Monte Carlo simulations (NMonteCarlo)
+    pub grain_size: f32,         // average grain radius (mu_R)
+    pub grain_size_std_dev: f32, // standard deviation of grain radius (sigma_R)
+    pub blur_sigma: f32,         // standard deviation of the low-pass filter (sigmaFilter)
+    pub n_monte_carlo: u32,      // number of Monte Carlo simulations (NMonteCarlo)
     pub mode: FilmGrainMode,
     pub backend: Backend,
-    pub seed: u64,                // seed for random number generator (for reproducibility)
-    pub x_start: u32,             // xA: left bound of input region (inclusive)
-    pub y_start: u32,             // yA: top bound of input region (inclusive)
-    pub x_end: u32,               // xB: right bound of input region (exclusive)
-    pub y_end: u32,               // yB: bottom bound of input region (exclusive)
-    pub output_width: u32,      // nOut: output image width (pixels)
-    pub output_height: u32,     // mOut: output image height (pixels)
-    pub threads: Option<usize>,   // for rayon threadpool
+    pub seed: u64,          // seed for random number generator (for reproducibility)
+    pub x_start: u32,       // xA: left bound of input region (inclusive)
+    pub y_start: u32,       // yA: top bound of input region (inclusive)
+    pub x_end: u32,         // xB: right bound of input region (exclusive)
+    pub y_end: u32,         // yB: bottom bound of input region (exclusive)
+    pub output_width: u32,  // nOut: output image width (pixels)
+    pub output_height: u32, // mOut: output image height (pixels)
+    pub threads: Option<usize>, // for rayon threadpool
 }
 
 impl Default for FilmGrainParams {
@@ -47,9 +47,12 @@ impl Default for FilmGrainParams {
             mode: FilmGrainMode::Auto,
             backend: Backend::Gpu,
             seed: 0,
-            x_start: 0, y_start: 0,
-            x_end: 0, y_end: 0,                // 0 means “use full image dims”
-            output_width: 0, output_height: 0, // 0 means “use zoom=1”
+            x_start: 0,
+            y_start: 0,
+            x_end: 0,
+            y_end: 0, // 0 means “use full image dims”
+            output_width: 0,
+            output_height: 0, // 0 means “use zoom=1”
             threads: None,
         }
     }
@@ -86,7 +89,12 @@ impl FilmGrainParams {
 
 /// Paper-inspired heuristic: pixel-wise faster when σ_r/μ_r small; grain-wise for larger.
 /// TODO: Decide boundary based on empirical data
+#[expect(dead_code, reason = "Will be called once mode wiring lands")]
 pub fn choose_mode(mu_r: f32, sigma_r: f32) -> FilmGrainMode {
     let ratio = if mu_r > 0.0 { sigma_r / mu_r } else { 1.0 };
-    if ratio <= 0.35 { FilmGrainMode::PixelWise } else { FilmGrainMode::GrainWise }
+    if ratio <= 0.35 {
+        FilmGrainMode::PixelWise
+    } else {
+        FilmGrainMode::GrainWise
+    }
 }
