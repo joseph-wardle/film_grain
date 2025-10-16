@@ -124,7 +124,7 @@ fn main() -> Result<()> {
         BackendOpt::Gpu => Backend::Gpu,
     };
 
-    let params = FilmGrainParams {
+    let mut params = FilmGrainParams {
         grain_size: args.grain_size,
         grain_size_std_dev: args.grain_size_std_dev,
         blur_sigma: args.blur_sigma,
@@ -162,6 +162,7 @@ fn main() -> Result<()> {
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
     }
 
+    params.finalize(img.width(), img.height());
     let out = filmgrain_core::render_image(&img, &params)?;
 
     if let Some(pb) = &pb {
