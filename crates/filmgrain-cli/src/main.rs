@@ -28,10 +28,6 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     seed: u64,
 
-    /// Show progress
-    #[arg(long, value_name = "BOOL", value_parser = ["true", "false"])]
-    progress: Option<bool>,
-
     #[command(subcommand)]
     cmd: Commands,
 }
@@ -133,15 +129,11 @@ fn main() -> Result<()> {
         threads: args.threads,
     };
 
-    let show_progress = cli.progress.unwrap_or(true);
-
-    let pb = if show_progress {
+    let pb = {
         let pb = ProgressBar::new_spinner();
         pb.set_style(ProgressStyle::with_template("{spinner} {msg}")?);
         pb.set_message("Rendering…");
         Some(pb)
-    } else {
-        None
     };
 
     if let Some(pb) = &pb {
