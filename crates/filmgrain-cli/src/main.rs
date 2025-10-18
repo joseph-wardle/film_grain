@@ -12,13 +12,6 @@ enum BackendOpt {
     Gpu,
 }
 
-#[derive(Copy, Clone, ValueEnum, Debug)]
-enum ModeOpt {
-    Pixelwise,
-    Grainwise,
-    Auto,
-}
-
 #[derive(Parser, Debug)]
 #[command(
     name = "filmgrain",
@@ -49,6 +42,8 @@ enum Commands {
     Pixelwise(SharedArgs),
     /// Grain-wise film grain
     Grainwise(SharedArgs),
+    /// Automatically choose the optimal algorithm
+    Auto(SharedArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -81,10 +76,6 @@ struct SharedArgs {
     #[arg(long = "n-monte-carlo", default_value_t = 800)]
     n_monte_carlo: u32,
 
-    /// Mode-specific override (else auto)
-    #[arg(long = "mode", value_enum)]
-    mode: Option<ModeOpt>,
-
     /// ROI (input coordinates)
     #[arg(long = "x-start", default_value_t = 0)]
     x_start: u32,
@@ -114,6 +105,7 @@ fn main() -> Result<()> {
     let (mode, args) = match &cli.cmd {
         Commands::Pixelwise(a) => (FilmGrainMode::PixelWise, a),
         Commands::Grainwise(a) => (FilmGrainMode::GrainWise, a),
+        Commands::Auto(a) => (FilmGrainMode::Auto, a),
     };
 
     let img = image::open(&args.input)?;
@@ -129,14 +121,7 @@ fn main() -> Result<()> {
         grain_size_std_dev: args.grain_size_std_dev,
         blur_sigma: args.blur_sigma,
         n_monte_carlo: args.n_monte_carlo,
-        mode: args
-            .mode
-            .map(|m| match m {
-                ModeOpt::Pixelwise => FilmGrainMode::PixelWise,
-                ModeOpt::Grainwise => FilmGrainMode::GrainWise,
-                ModeOpt::Auto => FilmGrainMode::Auto,
-            })
-            .unwrap_or(mode),
+        mode,
         backend,
         seed: cli.seed,
         x_start: args.x_start,
@@ -148,8 +133,9 @@ fn main() -> Result<()> {
         threads: args.threads,
     };
 
-    // defaults resolve in library
-    let pb = if cli.progress {
+    let show_progress = cli.progress.unwrap_or(true);
+
+    let pb = if show_progress {
         let pb = ProgressBar::new_spinner();
         pb.set_style(ProgressStyle::with_template("{spinner} {msg}")?);
         pb.set_message("Rendering…");
