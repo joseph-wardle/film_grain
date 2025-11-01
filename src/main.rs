@@ -1,5 +1,7 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use std::path::PathBuf;
+
+use film_grain_test::{self as film_grain, Algo, CliArgs, ColorMode, RadiusDist};
 
 fn main() {
     let args = Cli::parse();
@@ -11,9 +13,40 @@ fn handle_render(args: Cli) {
         eprintln!("warning: --radius-sd is ignored when --radius-dist=const");
     }
 
+    let cli_args = CliArgs {
+        input_path: args.input.clone(),
+        output_path: args.output.clone(),
+        radius_dist: args.radius_dist,
+        radius_mean: args.radius,
+        radius_stddev: args.radius_stddev,
+        zoom_s: args.zoom,
+        sigma_px: args.sigma,
+        n_samples: args.iters,
+        algo: args.algo,
+        max_radius: args.max_radius.clone(),
+        cell: args.cell.clone(),
+        color_mode: args.color_mode,
+        roi: args.roi.clone(),
+        size: args.size.clone(),
+        seed: args.seed,
+        dry_run: args.dry_run,
+        explain: args.explain,
+    };
+
+    let params = match film_grain::build_params(cli_args) {
+        Ok(params) => params,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    };
+
     if args.dry_run {
-        println!("{:#?}", args);
+        println!("{:#?}", params);
+        return;
     }
+
+    println!("{:#?}", params);
 }
 
 #[derive(Parser, Debug)]
@@ -113,11 +146,11 @@ struct Cli {
         long,
         value_name = "A",
         value_enum,
-        default_value_t = Algorithm::Auto,
+        default_value_t = Algo::Auto,
         help_heading = "ALGORITHM",
         help = "'auto' | 'grain' | 'pixel'"
     )]
-    algo: Algorithm,
+    algo: Algo,
 
     #[arg(
         long = "max-radius",
@@ -174,25 +207,14 @@ struct Cli {
         help = "Print chosen algorithm and why (incl. estimated cost)"
     )]
     explain: bool,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum RadiusDist {
-    Const,
-    Lognorm,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum ColorMode {
-    Rgb,
-    Luma,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum Algorithm {
-    Auto,
-    Grain,
-    Pixel,
+    #[arg(
+        long,
+        value_name = "SEED",
+        default_value_t = 5489,
+        help_heading = "I/O & QUALITY",
+        help = "Seed for all stochastic sampling"
+    )]
+    seed: u32,
 }
 
 fn parse_positive_f64(arg: &str) -> Result<f64, String> {
