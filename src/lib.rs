@@ -22,6 +22,12 @@ pub enum ColorMode {
     Rgb,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Device {
+    Cpu,
+    Gpu,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Roi {
     pub x0: u32,
@@ -50,6 +56,7 @@ pub struct Params {
     pub max_radius: MaxRadius,
     pub cell_delta: Option<f32>,
     pub color_mode: ColorMode,
+    pub device: Device,
     pub roi: Option<Roi>,
     pub size: Option<(u32, Option<u32>)>,
     pub seed: u32,
@@ -93,6 +100,7 @@ pub struct CliArgs {
     pub max_radius: String,
     pub cell: String,
     pub color_mode: ColorMode,
+    pub device: Device,
     pub roi: Option<String>,
     pub size: Option<String>,
     pub seed: u32,
@@ -152,6 +160,7 @@ pub fn build_params(args: CliArgs) -> ParamsResult<Params> {
         max_radius,
         cell_delta,
         color_mode: args.color_mode,
+        device: args.device,
         roi,
         size,
         seed: args.seed,

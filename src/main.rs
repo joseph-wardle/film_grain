@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use film_grain_test::{self as film_grain, Algo, CliArgs, ColorMode, RadiusDist};
+use film_grain_test::{self as film_grain, Algo, CliArgs, ColorMode, Device, RadiusDist};
 
 fn main() {
     let args = Cli::parse();
@@ -26,6 +26,7 @@ fn handle_render(args: Cli) {
         max_radius: args.max_radius.clone(),
         cell: args.cell.clone(),
         color_mode: args.color_mode,
+        device: args.device,
         roi: args.roi.clone(),
         size: args.size.clone(),
         seed: args.seed,
@@ -141,6 +142,16 @@ struct Cli {
         help = "'rgb' (independent per channel) | 'luma' (apply in Y)"
     )]
     color_mode: ColorMode,
+
+    #[arg(
+        long,
+        value_name = "DEVICE",
+        value_enum,
+        default_value_t = Device::Cpu,
+        help_heading = "DEVICE",
+        help = "'cpu' | 'gpu'"
+    )]
+    device: Device,
 
     #[arg(
         long,
