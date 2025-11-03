@@ -1,5 +1,5 @@
 [package]
-name = "film_grain_test"
+name = "film_grain"
 version = "0.1.0"
 edition = "2024"
 

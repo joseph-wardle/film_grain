@@ -1,9 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use film_grain_test::{
-    self as film_grain, Algo, CliArgs, ColorMode, Device, RadiusDist, RenderStats,
-};
+use film_grain::{Algo, CliArgs, ColorMode, Device, RadiusDist, RenderStats};
 
 fn main() {
     let args = Cli::parse();
