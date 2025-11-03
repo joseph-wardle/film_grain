@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "ico", "pnm", "gif", "hdr"] }
+rand = { version = "0.8", features = ["small_rng"] }
+rand_distr = "0.4"
+rayon = "1.10"
+statrs = "0.16"
+thiserror = "1.0"

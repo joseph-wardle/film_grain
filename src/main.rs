@@ -1,7 +1,9 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use film_grain_test::{self as film_grain, Algo, CliArgs, ColorMode, Device, RadiusDist};
+use film_grain_test::{
+    self as film_grain, Algo, CliArgs, ColorMode, Device, RadiusDist, RenderStats,
+};
 
 fn main() {
     let args = Cli::parse();
@@ -19,7 +21,7 @@ fn handle_render(args: Cli) {
         radius_dist: args.radius_dist,
         radius_mean: args.radius,
         radius_stddev: args.radius_stddev,
-        zoom_s: args.zoom,
+        zoom: args.zoom,
         sigma_px: args.sigma,
         n_samples: args.iters,
         algo: args.algo,
@@ -32,6 +34,7 @@ fn handle_render(args: Cli) {
         seed: args.seed,
         dry_run: args.dry_run,
         explain: args.explain,
+        output_format: args.format.clone(),
     };
 
     let params = match film_grain::build_params(cli_args) {
@@ -42,12 +45,29 @@ fn handle_render(args: Cli) {
         }
     };
 
-    if args.dry_run {
-        println!("{:#?}", params);
+    if params.dry_run {
+        match film_grain::dry_run(&params) {
+            Ok(stats) => {
+                println!("{:#?}", params);
+                print_stats(&stats, params.explain, true, &params.output_path);
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
 
-    println!("{:#?}", params);
+    match film_grain::render(&params) {
+        Ok(stats) => {
+            print_stats(&stats, params.explain, false, &params.output_path);
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -55,7 +75,7 @@ fn handle_render(args: Cli) {
     name = "filmgrain",
     bin_name = "filmgrain",
     version,
-    about = "Render physically-based film grain via a filtered Boolean model + Monte Carlo.",
+    about = "Render physically-based film grain via a filtered Boolean model.",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -226,6 +246,34 @@ struct Cli {
         help = "Seed for all stochastic sampling"
     )]
     seed: u32,
+}
+
+fn print_stats(stats: &RenderStats, explain: bool, dry_run: bool, output: &PathBuf) {
+    if dry_run {
+        println!(
+            "dry-run: {:?} algorithm, input {}x{} → output {}x{}, samples {}",
+            stats.algorithm,
+            stats.input_size.0,
+            stats.input_size.1,
+            stats.output_size.0,
+            stats.output_size.1,
+            stats.n_samples
+        );
+    } else {
+        println!(
+            "rendered {:?} algorithm → {} ({}x{})",
+            stats.algorithm,
+            output.display(),
+            stats.output_size.0,
+            stats.output_size.1
+        );
+    }
+    if explain {
+        println!(
+            "sigma/mean {:.3}, rm/mean {:.3}, samples {} on {:?}",
+            stats.sigma_ratio, stats.rm_ratio, stats.n_samples, stats.device
+        );
+    }
 }
 
 fn parse_positive_f64(arg: &str) -> Result<f64, String> {
