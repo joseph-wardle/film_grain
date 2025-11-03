@@ -36,7 +36,11 @@ SIGMA_RATIO_VALUES: Sequence[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
 ZOOM_VALUES: Sequence[int] = [1, 2, 4, 8]
 INTENSITY_PATTERNS: Sequence[str] = ["constant", "step", "ramp", "natural"]
 DEFAULT_SIGMA_FILTER = 0.8
-THREAD_MODES: Sequence[Tuple[str, Optional[int]]] = (("single", 1), ("multi", None))
+RUN_VARIANTS: Sequence[Tuple[str, str, Optional[int]]] = (
+    ("cpu", "single", 1),
+    ("cpu", "multi", None),
+    ("gpu", "gpu", None),
+)
 TOTAL_BASE_CONFIGS = (
     len(RESOLUTIONS)
     * len(N_VALUES)
@@ -48,6 +52,7 @@ TOTAL_BASE_CONFIGS = (
 
 CSV_HEADER: Sequence[str] = (
     "algorithm",
+    "device",
     "thread_mode",
     "m",
     "n",
@@ -194,6 +199,8 @@ def run_algorithm(
     output_dir: Path,
     config: Dict[str, float],
     algorithm_name: str,
+    device_mode: str,
+    thread_mode: str,
     repeats: int,
     sigma_filter: float,
     env: Dict[str, str],
@@ -204,6 +211,8 @@ def run_algorithm(
     for run_idx in range(repeats):
         token = (
             f"{algorithm_name}"
+            f"_device-{device_mode}"
+            f"_threads-{thread_mode}"
             f"_pattern-{config['pattern']}"
             f"_m-{int(config['m'])}"
             f"_zoom-{fmt_float(config['s'])}"
@@ -232,7 +241,7 @@ def run_algorithm(
             "--color-mode",
             "luma",
             "--device",
-            "cpu",
+            device_mode,
         ]
         sigma_ratio = config["sigma_r_ratio"]
         if sigma_ratio > 0.0:
@@ -433,11 +442,11 @@ def main() -> None:
     env = os.environ.copy()
 
     total_algorithms = 2
-    total_thread_modes = len(THREAD_MODES)
-    total_runs = TOTAL_BASE_CONFIGS * total_algorithms * total_thread_modes
+    total_variants = len(RUN_VARIANTS)
+    total_runs = TOTAL_BASE_CONFIGS * total_algorithms * total_variants
     print(
         f"[bench] sweeping {TOTAL_BASE_CONFIGS} base configurations "
-        f"× {total_algorithms} algos × {total_thread_modes} thread modes "
+        f"× {total_algorithms} algos × {total_variants} device/thread variants "
         f"= {total_runs} runs.",
         flush=True,
     )
@@ -448,15 +457,14 @@ def main() -> None:
         )
 
     # Build list of work items (do not execute yet). Each item corresponds to one CSV row to produce.
-    thread_modes = THREAD_MODES
-
-    tasks: List[Tuple[Dict[str, float], str, str, Optional[int], Dict[str, str]]] = []
+    tasks: List[Tuple[Dict[str, float], str, str, str, Optional[int], Dict[str, str]]] = []
     try:
         for base_config in base_config_iterator():
             for algorithm_name in ("grain", "pixel"):
-                for mode_name, rayon_threads in thread_modes:
+                for device_mode, mode_name, rayon_threads in RUN_VARIANTS:
                     result_row = {
                         "algorithm": algorithm_name,
+                        "device": device_mode,
                         "thread_mode": mode_name,
                         "m": str(int(base_config["m"])),
                         "n": str(int(base_config["n"])),
@@ -476,6 +484,7 @@ def main() -> None:
                         (
                             base_config.copy(),
                             algorithm_name,
+                            device_mode,
                             mode_name,
                             rayon_threads,
                             result_row,
@@ -507,7 +516,14 @@ def main() -> None:
 
     total_written = 0
     try:
-        for base_config, algorithm_name, mode_name, rayon_threads, result_row in tasks:
+        for (
+            base_config,
+            algorithm_name,
+            device_mode,
+            mode_name,
+            rayon_threads,
+            result_row,
+        ) in tasks:
             pattern = base_config["pattern"]
             size = int(base_config["m"])
             image_path = input_paths[(pattern, size)]
@@ -517,7 +533,7 @@ def main() -> None:
                 "m_out": base_config["m_out"],
             }
             run_env = env.copy()
-            if rayon_threads is not None:
+            if device_mode == "cpu" and rayon_threads is not None:
                 run_env["RAYON_NUM_THREADS"] = str(max(1, rayon_threads))
             else:
                 run_env.pop("RAYON_NUM_THREADS", None)
@@ -531,6 +547,8 @@ def main() -> None:
                     output_dir,
                     config,
                     algorithm_name,
+                    device_mode,
+                    mode_name,
                     max(1, args.repeats),
                     args.sigma_filter,
                     run_env,
@@ -546,7 +564,7 @@ def main() -> None:
             existing_rows[key] = result_row
             total_written += 1
             print(
-                f"[{total_written}] mode={mode_name} algo={result_row['algorithm']} "
+                f"[{total_written}] device={device_mode} mode={mode_name} algo={result_row['algorithm']} "
                 f"pattern={result_row['intensity_pattern']} size={result_row['m']} "
                 f"N={result_row['N']} mu_r={result_row['mu_r']} "
                 f"sigma_ratio={result_row['sigma_r_ratio']} zoom={result_row['s']} "
