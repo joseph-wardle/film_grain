@@ -165,7 +165,7 @@ struct Cli {
         long,
         value_name = "DEVICE",
         value_enum,
-        default_value_t = Device::Cpu,
+        default_value_t = Device::Gpu,
         help_heading = "DEVICE",
         help = "'cpu' | 'gpu'"
     )]

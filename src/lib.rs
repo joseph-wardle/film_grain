@@ -31,6 +31,8 @@ pub enum RenderError {
     Image(#[from] image::ImageError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("gpu error: {0}")]
+    Gpu(String),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
     #[error("{0}")]
@@ -49,21 +51,31 @@ pub struct RenderStats {
 }
 
 pub fn render(params: &Params) -> RenderResult<RenderStats> {
-    ensure_cpu(params)?;
     let mut workspace = Workspace::load(params)?;
     let input_size = workspace.dimensions();
     let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
     let algorithm = choose_algorithm(params, &derived);
+    let gpu_ctx = match params.device {
+        Device::Gpu => Some(wgpu::context()?),
+        Device::Cpu => None,
+    };
 
     workspace.for_each_plane(|plane, _| {
         let (normalized, _) = normalize_plane(plane);
         let lambda = lambda_plane(&normalized, derived.inv_e_pi_r2);
-        let output = match algorithm {
-            Algo::Pixel => render_pixelwise(&lambda, params, &derived),
-            Algo::Grain => render_grainwise(&lambda, params, &derived),
-            Algo::Auto => unreachable!("auto selection resolved before rendering"),
-        };
-        Ok(output)
+        match (params.device, algorithm) {
+            (Device::Cpu, Algo::Pixel) => Ok(render_pixelwise(&lambda, params, &derived)),
+            (Device::Cpu, Algo::Grain) => Ok(render_grainwise(&lambda, params, &derived)),
+            (Device::Gpu, Algo::Pixel) => {
+                let ctx = gpu_ctx.expect("gpu context initialized");
+                wgpu::render_pixelwise_gpu(ctx, &lambda, params, &derived)
+            }
+            (Device::Gpu, Algo::Grain) => {
+                let ctx = gpu_ctx.expect("gpu context initialized");
+                wgpu::render_grainwise_gpu(ctx, &lambda, params, &derived)
+            }
+            (_, Algo::Auto) => unreachable!("auto selection resolved before rendering"),
+        }
     })?;
 
     if let Some(parent) = params.output_path.parent() {
@@ -78,21 +90,11 @@ pub fn render(params: &Params) -> RenderResult<RenderStats> {
 }
 
 pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
-    ensure_cpu(params)?;
     let workspace = Workspace::load(params)?;
     let input_size = workspace.dimensions();
     let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
     let algorithm = choose_algorithm(params, &derived);
     Ok(make_stats(params, &derived, algorithm))
-}
-
-fn ensure_cpu(params: &Params) -> RenderResult<()> {
-    if matches!(params.device, Device::Gpu) {
-        return Err(RenderError::Unsupported(
-            "GPU backend is not implemented yet",
-        ));
-    }
-    Ok(())
 }
 
 fn resolve_format(params: &Params) -> RenderResult<image::ImageFormat> {

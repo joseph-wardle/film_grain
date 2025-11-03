@@ -11,3 +11,6 @@ rand_distr = "0.4"
 rayon = "1.10"
 statrs = "0.16"
 thiserror = "1.0"
+wgpu = { version = "0.19", features = ["wgsl"] }
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.3"
