@@ -202,8 +202,18 @@ def run_algorithm(
     runtimes: List[float] = []
     captured_stdout, captured_stderr = "", ""
     for run_idx in range(repeats):
-        token = uuid.uuid4().hex
-        output_file = output_dir / f"bench_{token}.png"
+        token = (
+            f"{algorithm_name}"
+            f"_pattern-{config['pattern']}"
+            f"_m-{int(config['m'])}"
+            f"_zoom-{fmt_float(config['s'])}"
+            f"_mu-{fmt_float(config['mu_r'])}"
+            f"_sigmaRatio-{fmt_float(config['sigma_r_ratio'])}"
+            f"_N-{int(config['N'])}"
+            f"_seed-{5489 + run_idx}"
+        )
+        safe_token = token.replace("/", "_")
+        output_file = output_dir / f"{safe_token}.png"
         cmd = [
             str(binary),
             str(image_path),
