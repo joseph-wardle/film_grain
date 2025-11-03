@@ -231,15 +231,20 @@ pub fn normalize_plane(plane: &Plane) -> (Plane, f32) {
         .iter()
         .copied()
         .fold(0.0_f32, |acc, value| acc.max(value));
-    let denom = (max_value + EPSILON).max(EPSILON);
+    let already_normalized = max_value <= 1.0 + EPSILON;
     let mut normalized = Plane::new(plane.width, plane.height);
     for (dst, &src) in normalized
         .pixels_mut()
         .iter_mut()
         .zip(plane.pixels().iter())
     {
-        let value = (src / denom).clamp(0.0, 1.0 - EPSILON);
-        *dst = value;
+        let value = if already_normalized {
+            src
+        } else {
+            let denom = (max_value + EPSILON).max(EPSILON);
+            src / denom
+        };
+        *dst = value.clamp(0.0, 1.0 - EPSILON);
     }
     (normalized, max_value)
 }
