@@ -25,34 +25,61 @@ struct Uniforms {
 @group(0) @binding(3) var<storage, read_write> bitset: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read_write> out_accum: array<f32>;
 
+fn rotl(x: u32, k: u32) -> u32 {
+    return (x << k) | (x >> (32u - k));
+}
+
 fn hash3(a: u32, b: u32, c: u32) -> u32 {
-    var x = a ^ (b << 7u) ^ (c << 13u);
-    x = x ^ (x >> 17u);
-    x = x * 0x9E3779B1u;
-    x = x ^ (x >> 15u);
-    x = x * 0x85EBCA77u;
-    x = x ^ (x >> 13u);
-    return x;
+    var v = a ^ 0x9E3779B9u;
+    v = v + b;
+    v = (v ^ (v >> 16u)) * 0x7FEB352Du;
+    v = (v ^ (v >> 15u)) * 0x846CA68Bu;
+    v = v ^ (v >> 16u);
+    v = v + c * 0x9E3779B1u;
+    v = (v ^ (v >> 13u)) * 0xC2B2AE35u;
+    return v ^ (v >> 16u);
+}
+
+fn splitmix_step(state: ptr<function, u32>) -> u32 {
+    (*state) = (*state) + 0x9E3779B9u;
+    var z = (*state);
+    z = (z ^ (z >> 16u)) * 0x85EBCA6Bu;
+    z = (z ^ (z >> 13u)) * 0xC2B2AE35u;
+    return z ^ (z >> 16u);
 }
 
 struct Rng {
-    state: u32,
+    s0: u32,
+    s1: u32,
+    s2: u32,
+    s3: u32,
 };
 
 fn rng_init(seed: u32) -> Rng {
-    return Rng(hash3(seed, 0xC2B2AE35u, 0x27D4EB2Fu));
+    var sm = seed;
+    return Rng(
+        splitmix_step(&sm),
+        splitmix_step(&sm),
+        splitmix_step(&sm),
+        splitmix_step(&sm),
+    );
 }
 
 fn rng_next_u32(r: ptr<function, Rng>) -> u32 {
-    (*r).state = (*r).state ^ ((*r).state << 13u);
-    (*r).state = (*r).state ^ ((*r).state >> 17u);
-    (*r).state = (*r).state ^ ((*r).state << 5u);
-    return (*r).state;
+    let result = rotl((*r).s1 * 5u, 7u) * 9u;
+    let t = (*r).s1 << 9u;
+    (*r).s2 = (*r).s2 ^ (*r).s0;
+    (*r).s3 = (*r).s3 ^ (*r).s1;
+    (*r).s1 = (*r).s1 ^ (*r).s2;
+    (*r).s0 = (*r).s0 ^ (*r).s3;
+    (*r).s2 = (*r).s2 ^ t;
+    (*r).s3 = rotl((*r).s3, 11u);
+    return result;
 }
 
 fn uniform01(r: ptr<function, Rng>) -> f32 {
-    let value = rng_next_u32(r);
-    return f32(value) * (1.0 / 4294967296.0);
+    let value = rng_next_u32(r) >> 8u;
+    return f32(value) * (1.0 / 16777216.0);
 }
 
 fn box_muller2(r: ptr<function, Rng>) -> vec2<f32> {
