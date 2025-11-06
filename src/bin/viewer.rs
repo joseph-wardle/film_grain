@@ -214,20 +214,20 @@ impl ViewerState {
         if self.source.is_none() {
             return;
         }
-        if change.require_reload {
-            if let Err(err) = self.reload_source_from_params() {
-                self.set_error(err);
-                return;
-            }
+        if change.require_reload
+            && let Err(err) = self.reload_source_from_params()
+        {
+            self.set_error(err);
+            return;
         }
         if change.request_preview {
             if let Err(err) = self.schedule_render(RenderMode::Preview) {
                 self.set_error(err);
             }
-        } else if change.request_stats_only {
-            if let Err(err) = self.schedule_render(RenderMode::StatsOnly) {
-                self.set_error(err);
-            }
+        } else if change.request_stats_only
+            && let Err(err) = self.schedule_render(RenderMode::StatsOnly)
+        {
+            self.set_error(err);
         }
     }
 
@@ -653,17 +653,16 @@ impl InteractiveParams {
             }
             change.mark_changed();
         }
-        if !self.cell_auto {
-            if ui
+        if !self.cell_auto
+            && ui
                 .add(
                     egui::Slider::new(&mut self.cell_value, 0.01..=5.0)
                         .logarithmic(true)
                         .text("Manual cell size"),
                 )
                 .changed()
-            {
-                change.mark_changed();
-            }
+        {
+            change.mark_changed();
         }
         if cell_auto_prev && !self.cell_auto {
             change.mark_changed();
@@ -921,10 +920,10 @@ impl InteractiveParams {
     }
 
     fn update_output_defaults(&mut self, source_path: &Path) {
-        if self.output_path_override.trim().is_empty() {
-            if let Some(path) = default_output_path(source_path).to_str() {
-                self.output_path_override = path.to_owned();
-            }
+        if self.output_path_override.trim().is_empty()
+            && let Some(path) = default_output_path(source_path).to_str()
+        {
+            self.output_path_override = path.to_owned();
         }
     }
 }
@@ -1180,17 +1179,19 @@ impl WorkerState {
     }
 }
 
+#[derive(Default)]
 enum WorkerStatus {
+    #[default]
     Idle,
-    Rendering { started_at: Instant },
-    Completed { finished_at: Instant },
-    Failed { message: String },
-}
-
-impl Default for WorkerStatus {
-    fn default() -> Self {
-        WorkerStatus::Idle
-    }
+    Rendering {
+        started_at: Instant,
+    },
+    Completed {
+        finished_at: Instant,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 fn stats_summary(stats: &RenderStats) -> String {

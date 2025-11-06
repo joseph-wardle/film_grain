@@ -346,10 +346,10 @@ fn ensure_size(size: Option<(u32, Option<u32>)>) -> ParamsResult<Option<(u32, Op
         if width == 0 {
             return Err(ParamsError::new("size", "output width must be > 0"));
         }
-        if let Some(height) = maybe_height {
-            if height == 0 {
-                return Err(ParamsError::new("size", "output height must be > 0"));
-            }
+        if let Some(height) = maybe_height
+            && height == 0
+        {
+            return Err(ParamsError::new("size", "output height must be > 0"));
         }
         Ok(Some((width, maybe_height)))
     } else {
