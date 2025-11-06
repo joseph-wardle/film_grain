@@ -170,9 +170,13 @@ impl ViewerState {
                 continue;
             }
             match result.outcome {
-                Ok(JobResult::Preview { image, stats }) => {
+                Ok(JobResult::Preview {
+                    image,
+                    stats,
+                    color_mode,
+                }) => {
                     self.last_stats = Some(stats);
-                    self.preview.set_image(ctx, image);
+                    self.preview.set_image(ctx, image, color_mode);
                     self.worker_status.complete();
                     self.clear_error();
                 }
@@ -381,12 +385,12 @@ struct PreviewState {
 }
 
 impl PreviewState {
-    fn set_image(&mut self, ctx: &egui::Context, image: RgbImage) {
-        self.last_image = Some(image.clone());
-        let color_image = color_image_from_rgb(image);
+    fn set_image(&mut self, ctx: &egui::Context, image: RgbImage, mode: ColorMode) {
+        let color_image = color_image_for_display(&image, mode);
         let name = format!("filmgrain-preview-{}", self.generation);
         self.generation = self.generation.wrapping_add(1);
         self.texture = Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()));
+        self.last_image = Some(image);
     }
 
     fn has_image(&self) -> bool {
@@ -1010,12 +1014,19 @@ impl RenderWorker {
                     let token = CancelToken::new(job.id, worker_latest.clone());
                     let cancel = || token.is_cancelled();
                     let outcome = match job.kind {
-                        RenderTaskKind::Preview => render_with_input_image_cancelable(
-                            job.input.as_ref(),
-                            &job.params,
-                            &cancel,
-                        )
-                        .map(|(image, stats)| JobResult::Preview { image, stats }),
+                        RenderTaskKind::Preview => {
+                            let color_mode = job.params.color_mode;
+                            render_with_input_image_cancelable(
+                                job.input.as_ref(),
+                                &job.params,
+                                &cancel,
+                            )
+                            .map(|(image, stats)| JobResult::Preview {
+                                image,
+                                stats,
+                                color_mode,
+                            })
+                        }
                         RenderTaskKind::StatsOnly => dry_run_with_input_image_cancelable(
                             job.input.as_ref(),
                             &job.params,
@@ -1099,8 +1110,14 @@ struct RenderOutcome {
 }
 
 enum JobResult {
-    Preview { image: RgbImage, stats: RenderStats },
-    Stats { stats: RenderStats },
+    Preview {
+        image: RgbImage,
+        stats: RenderStats,
+        color_mode: ColorMode,
+    },
+    Stats {
+        stats: RenderStats,
+    },
 }
 
 #[derive(Copy, Clone)]
@@ -1115,13 +1132,31 @@ enum RenderTaskKind {
     StatsOnly,
 }
 
-fn color_image_from_rgb(image: RgbImage) -> egui::ColorImage {
+const DISPLAY_Y_COEFF_R: f32 = 0.2126;
+const DISPLAY_Y_COEFF_G: f32 = 0.7152;
+const DISPLAY_Y_COEFF_B: f32 = 0.0722;
+
+fn color_image_for_display(image: &RgbImage, mode: ColorMode) -> egui::ColorImage {
     let width = image.width() as usize;
     let height = image.height() as usize;
-    let raw = image.into_raw();
+    let raw = image.as_raw();
     let mut pixels = Vec::with_capacity(width * height);
-    for chunk in raw.chunks_exact(3) {
-        pixels.push(egui::Color32::from_rgb(chunk[0], chunk[1], chunk[2]));
+    match mode {
+        ColorMode::Rgb => {
+            for chunk in raw.chunks_exact(3) {
+                pixels.push(egui::Color32::from_rgb(chunk[0], chunk[1], chunk[2]));
+            }
+        }
+        ColorMode::Luma => {
+            for chunk in raw.chunks_exact(3) {
+                let y = (DISPLAY_Y_COEFF_R * chunk[0] as f32
+                    + DISPLAY_Y_COEFF_G * chunk[1] as f32
+                    + DISPLAY_Y_COEFF_B * chunk[2] as f32)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                pixels.push(egui::Color32::from_gray(y));
+            }
+        }
     }
     egui::ColorImage {
         size: [width, height],
