@@ -262,6 +262,7 @@ fn init() -> Result<GpuContext, RenderError> {
         layout: Some(&pixel_pipeline_layout),
         module: &pixel_shader,
         entry_point: "main",
+        compilation_options: Default::default(),
     });
 
     let grain_splat_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -269,6 +270,7 @@ fn init() -> Result<GpuContext, RenderError> {
         layout: Some(&grain_splat_pipeline_layout),
         module: &grain_shader,
         entry_point: "splat",
+        compilation_options: Default::default(),
     });
 
     let grain_reduce_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -276,6 +278,7 @@ fn init() -> Result<GpuContext, RenderError> {
         layout: Some(&grain_reduce_pipeline_layout),
         module: &grain_shader,
         entry_point: "reduce",
+        compilation_options: Default::default(),
     });
 
     Ok(GpuContext {
