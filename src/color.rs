@@ -1,6 +1,4 @@
-use std::path::Path;
-
-use image::{DynamicImage, GenericImageView, ImageFormat, RgbImage};
+use image::{DynamicImage, GenericImageView, RgbImage};
 
 use crate::RenderError;
 use crate::model::Plane;
@@ -57,7 +55,7 @@ impl Workspace {
         Ok(())
     }
 
-    pub fn save(self, output_path: &Path, format: ImageFormat) -> Result<(), RenderError> {
+    pub fn into_rgb_image(self) -> Result<RgbImage, RenderError> {
         match self.kind {
             WorkspaceKind::Luma { y, cb, cr } => {
                 let width = y.width;
@@ -86,9 +84,8 @@ impl Workspace {
                         buffer[idx + 2] = to_u8(b);
                     }
                 }
-                let image = RgbImage::from_vec(width as u32, height as u32, buffer)
-                    .ok_or_else(|| RenderError::Message("failed to create RGB image".into()))?;
-                save_image(image, output_path, format)
+                RgbImage::from_vec(width as u32, height as u32, buffer)
+                    .ok_or_else(|| RenderError::Message("failed to create RGB image".into()))
             }
             WorkspaceKind::Rgb { planes } => {
                 let width = planes[0].width;
@@ -102,9 +99,8 @@ impl Workspace {
                         buffer[idx + 2] = to_u8(planes[2].get(x_idx, y_idx));
                     }
                 }
-                let image = RgbImage::from_vec(width as u32, height as u32, buffer)
-                    .ok_or_else(|| RenderError::Message("failed to create RGB image".into()))?;
-                save_image(image, output_path, format)
+                RgbImage::from_vec(width as u32, height as u32, buffer)
+                    .ok_or_else(|| RenderError::Message("failed to create RGB image".into()))
             }
         }
     }
@@ -191,10 +187,4 @@ fn clamp01(value: f32) -> f32 {
 
 fn to_u8(value: f32) -> u8 {
     (clamp01(value) * 255.0 + 0.5).floor() as u8
-}
-
-fn save_image(image: RgbImage, path: &Path, format: ImageFormat) -> Result<(), RenderError> {
-    image
-        .save_with_format(path, format)
-        .map_err(RenderError::from)
 }

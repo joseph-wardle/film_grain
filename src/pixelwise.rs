@@ -19,7 +19,6 @@ pub fn render_pixelwise(lambda: &Plane, params: &Params, derived: &Derived) -> P
         .par_chunks_mut(out_w)
         .enumerate()
         .for_each(|(y, row)| {
-            let y = y as usize;
             for (x, value) in row.iter_mut().enumerate() {
                 let mut sum = 0.0f32;
                 for offset in offsets_input {

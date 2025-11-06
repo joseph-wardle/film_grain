@@ -307,7 +307,7 @@ pub fn render_pixelwise_gpu(
     let lambda_bytes = bytemuck::cast_slice(lambda.pixels());
     let offsets_bytes = bytemuck::cast_slice(offsets);
     let uniforms_bytes = bytemuck::bytes_of(&uniforms);
-    let out_len = (d.output_width * d.output_height) as usize;
+    let out_len = d.output_width * d.output_height;
     let out_bytes = out_len * std::mem::size_of::<f32>();
 
     let lambda_buffer = ctx
@@ -435,7 +435,7 @@ pub fn render_grainwise_gpu(
     let offsets_bytes = bytemuck::cast_slice(offsets);
     let uniforms_bytes = bytemuck::bytes_of(&uniforms);
 
-    let out_len = (d.output_width * d.output_height) as usize;
+    let out_len = d.output_width * d.output_height;
     let bitset_words = out_len * lanes as usize;
     let bitset_bytes = bitset_words * std::mem::size_of::<u32>();
     let out_bytes = out_len * std::mem::size_of::<f32>();
@@ -627,9 +627,9 @@ fn build_uniforms(params: &Params, derived: &Derived, lanes: u32) -> Uniforms {
 }
 
 fn div_round_up(a: usize, b: u32) -> u32 {
-    ((a as u32) + b - 1) / b
+    (a as u32).div_ceil(b)
 }
 
 fn lanes_for_samples(samples: u32) -> u32 {
-    ((samples + 31) / 32).max(1)
+    samples.div_ceil(32)
 }

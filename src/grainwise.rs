@@ -12,7 +12,7 @@ pub fn render_grainwise(lambda: &Plane, params: &Params, derived: &Derived) -> P
     let out_w = derived.output_width;
     let out_h = derived.output_height;
     let total = out_w * out_h;
-    let lanes = ((params.n_samples as usize + 63) / 64).max(1);
+    let lanes = (params.n_samples as usize).div_ceil(64);
     let bitsets: Vec<AtomicU64> = (0..total * lanes).map(|_| AtomicU64::new(0)).collect();
 
     let offsets = &derived.offsets;
@@ -51,27 +51,26 @@ pub fn render_grainwise(lambda: &Plane, params: &Params, derived: &Derived) -> P
                     let ty = (cy * zoom) + offset[1];
                     if let Some((x_min, x_max)) =
                         bounds(tx, radius_out, derived.output_width as i32)
-                    {
-                        if let Some((y_min, y_max)) =
+                        && let Some((y_min, y_max)) =
                             bounds(ty, radius_out, derived.output_height as i32)
-                        {
-                            let lane_idx = k / 64;
-                            let bit_mask = 1u64 << (k % 64);
-                            for oy in y_min..=y_max {
-                                let center_y = oy as f32 + 0.5;
-                                let dy = center_y - ty;
-                                let dy_sq = dy * dy;
-                                if dy_sq > radius_sq {
-                                    continue;
-                                }
-                                for ox in x_min..=x_max {
-                                    let center_x = ox as f32 + 0.5;
-                                    let dx = center_x - tx;
-                                    if dx * dx + dy_sq <= radius_sq {
-                                        let idx = oy as usize * derived.output_width + ox as usize;
-                                        let slot = idx * lanes + lane_idx;
-                                        bitsets[slot].fetch_or(bit_mask, Ordering::Relaxed);
-                                    }
+                    {
+                        let lane_idx = k / 64;
+                        let bit_mask = 1u64 << (k % 64);
+
+                        for oy in y_min..=y_max {
+                            let center_y = oy as f32 + 0.5;
+                            let dy = center_y - ty;
+                            let dy_sq = dy * dy;
+                            if dy_sq > radius_sq {
+                                continue;
+                            }
+                            for ox in x_min..=x_max {
+                                let center_x = ox as f32 + 0.5;
+                                let dx = center_x - tx;
+                                if dx * dx + dy_sq <= radius_sq {
+                                    let idx = oy as usize * derived.output_width + ox as usize;
+                                    let slot = idx * lanes + lane_idx;
+                                    bitsets[slot].fetch_or(bit_mask, Ordering::Relaxed);
                                 }
                             }
                         }

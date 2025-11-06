@@ -1,6 +1,7 @@
 use choose::choose_algorithm;
 use color::Workspace;
 use grainwise::render_grainwise;
+use image::RgbImage;
 use model::{Derived, derive_common, lambda_plane, normalize_plane};
 use pixelwise::render_pixelwise;
 use std::fs;
@@ -51,6 +52,22 @@ pub struct RenderStats {
 }
 
 pub fn render(params: &Params) -> RenderResult<RenderStats> {
+    let (image, stats) = render_to_image(params)?;
+
+    if let Some(parent) = params.output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let format = resolve_format(params)?;
+    image
+        .save_with_format(&params.output_path, format)
+        .map_err(RenderError::from)?;
+
+    Ok(stats)
+}
+
+pub fn render_to_image(params: &Params) -> RenderResult<(RgbImage, RenderStats)> {
     let mut workspace = Workspace::load(params)?;
     let input_size = workspace.dimensions();
     let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
@@ -78,15 +95,9 @@ pub fn render(params: &Params) -> RenderResult<RenderStats> {
         }
     })?;
 
-    if let Some(parent) = params.output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let format = resolve_format(params)?;
-    workspace.save(&params.output_path, format)?;
-
-    Ok(make_stats(params, &derived, algorithm))
+    let stats = make_stats(params, &derived, algorithm);
+    let image = workspace.into_rgb_image()?;
+    Ok((image, stats))
 }
 
 pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
