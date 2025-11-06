@@ -83,9 +83,13 @@ pub fn render_with_input_image(
 
 pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
     let workspace = Workspace::load(params)?;
-    let input_size = workspace.dimensions();
-    let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
-    let algorithm = choose_algorithm(params, &derived);
+    let (derived, algorithm) = derive_for_workspace(&workspace, params)?;
+    Ok(make_stats(params, &derived, algorithm))
+}
+
+pub fn dry_run_with_input_image(input: &InputImage, params: &Params) -> RenderResult<RenderStats> {
+    let workspace = input.to_workspace();
+    let (derived, algorithm) = derive_for_workspace(&workspace, params)?;
     Ok(make_stats(params, &derived, algorithm))
 }
 
@@ -93,9 +97,7 @@ fn render_from_workspace(
     mut workspace: Workspace,
     params: &Params,
 ) -> RenderResult<(RgbImage, RenderStats)> {
-    let input_size = workspace.dimensions();
-    let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
-    let algorithm = choose_algorithm(params, &derived);
+    let (derived, algorithm) = derive_for_workspace(&workspace, params)?;
     let gpu_ctx = match params.device {
         Device::Gpu => Some(wgpu::context()?),
         Device::Cpu => None,
@@ -122,6 +124,13 @@ fn render_from_workspace(
     let stats = make_stats(params, &derived, algorithm);
     let image = workspace.into_rgb_image()?;
     Ok((image, stats))
+}
+
+fn derive_for_workspace(workspace: &Workspace, params: &Params) -> RenderResult<(Derived, Algo)> {
+    let input_size = workspace.dimensions();
+    let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
+    let algorithm = choose_algorithm(params, &derived);
+    Ok((derived, algorithm))
 }
 
 fn resolve_format(params: &Params) -> RenderResult<image::ImageFormat> {
