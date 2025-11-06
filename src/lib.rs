@@ -69,7 +69,30 @@ pub fn render(params: &Params) -> RenderResult<RenderStats> {
 }
 
 pub fn render_to_image(params: &Params) -> RenderResult<(RgbImage, RenderStats)> {
-    let mut workspace = Workspace::load(params)?;
+    let workspace = Workspace::load(params)?;
+    render_from_workspace(workspace, params)
+}
+
+pub fn render_with_input_image(
+    input: &InputImage,
+    params: &Params,
+) -> RenderResult<(RgbImage, RenderStats)> {
+    let workspace = input.to_workspace();
+    render_from_workspace(workspace, params)
+}
+
+pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
+    let workspace = Workspace::load(params)?;
+    let input_size = workspace.dimensions();
+    let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
+    let algorithm = choose_algorithm(params, &derived);
+    Ok(make_stats(params, &derived, algorithm))
+}
+
+fn render_from_workspace(
+    mut workspace: Workspace,
+    params: &Params,
+) -> RenderResult<(RgbImage, RenderStats)> {
     let input_size = workspace.dimensions();
     let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
     let algorithm = choose_algorithm(params, &derived);
@@ -99,14 +122,6 @@ pub fn render_to_image(params: &Params) -> RenderResult<(RgbImage, RenderStats)>
     let stats = make_stats(params, &derived, algorithm);
     let image = workspace.into_rgb_image()?;
     Ok((image, stats))
-}
-
-pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
-    let workspace = Workspace::load(params)?;
-    let input_size = workspace.dimensions();
-    let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
-    let algorithm = choose_algorithm(params, &derived);
-    Ok(make_stats(params, &derived, algorithm))
 }
 
 fn resolve_format(params: &Params) -> RenderResult<image::ImageFormat> {

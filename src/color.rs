@@ -16,6 +16,7 @@ pub struct Workspace {
     kind: WorkspaceKind,
 }
 
+#[derive(Clone)]
 enum WorkspaceKind {
     Luma { y: Plane, cb: Plane, cr: Plane },
     Rgb { planes: [Plane; 3] },
@@ -113,6 +114,7 @@ impl Workspace {
     }
 }
 
+#[derive(Clone)]
 pub struct InputImage {
     color_mode: ColorMode,
     kind: WorkspaceKind,
