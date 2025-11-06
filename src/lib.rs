@@ -37,6 +37,8 @@ pub enum RenderError {
     Gpu(String),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
+    #[error("cancelled")]
+    Cancelled,
     #[error("{0}")]
     Message(String),
 }
@@ -70,7 +72,7 @@ pub fn render(params: &Params) -> RenderResult<RenderStats> {
 
 pub fn render_to_image(params: &Params) -> RenderResult<(RgbImage, RenderStats)> {
     let workspace = Workspace::load(params)?;
-    render_from_workspace(workspace, params)
+    render_from_workspace_impl(workspace, params, None)
 }
 
 pub fn render_with_input_image(
@@ -78,42 +80,84 @@ pub fn render_with_input_image(
     params: &Params,
 ) -> RenderResult<(RgbImage, RenderStats)> {
     let workspace = input.to_workspace();
-    render_from_workspace(workspace, params)
+    render_from_workspace_impl(workspace, params, None)
+}
+
+pub fn render_with_input_image_cancelable(
+    input: &InputImage,
+    params: &Params,
+    cancel: &(dyn Fn() -> bool + Send + Sync),
+) -> RenderResult<(RgbImage, RenderStats)> {
+    let workspace = input.to_workspace();
+    render_from_workspace_impl(workspace, params, Some(cancel))
 }
 
 pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
     let workspace = Workspace::load(params)?;
-    let (derived, algorithm) = derive_for_workspace(&workspace, params)?;
-    Ok(make_stats(params, &derived, algorithm))
+    dry_run_for_workspace(&workspace, params, None)
 }
 
 pub fn dry_run_with_input_image(input: &InputImage, params: &Params) -> RenderResult<RenderStats> {
     let workspace = input.to_workspace();
-    let (derived, algorithm) = derive_for_workspace(&workspace, params)?;
+    dry_run_for_workspace(&workspace, params, None)
+}
+
+pub fn dry_run_with_input_image_cancelable(
+    input: &InputImage,
+    params: &Params,
+    cancel: &(dyn Fn() -> bool + Send + Sync),
+) -> RenderResult<RenderStats> {
+    let workspace = input.to_workspace();
+    dry_run_for_workspace(&workspace, params, Some(cancel))
+}
+
+type CancelCheck<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
+
+fn check_cancel(cancel: CancelCheck<'_>) -> RenderResult<()> {
+    if let Some(check) = cancel {
+        if check() {
+            return Err(RenderError::Cancelled);
+        }
+    }
+    Ok(())
+}
+
+fn dry_run_for_workspace(
+    workspace: &Workspace,
+    params: &Params,
+    cancel: CancelCheck<'_>,
+) -> RenderResult<RenderStats> {
+    let (derived, algorithm) = derive_for_workspace_impl(workspace, params, cancel)?;
     Ok(make_stats(params, &derived, algorithm))
 }
 
-fn render_from_workspace(
+fn render_from_workspace_impl(
     mut workspace: Workspace,
     params: &Params,
+    cancel: CancelCheck<'_>,
 ) -> RenderResult<(RgbImage, RenderStats)> {
-    let (derived, algorithm) = derive_for_workspace(&workspace, params)?;
+    check_cancel(cancel)?;
+    let (derived, algorithm) = derive_for_workspace_impl(&workspace, params, cancel)?;
     let gpu_ctx = match params.device {
         Device::Gpu => Some(wgpu::context()?),
         Device::Cpu => None,
     };
 
     workspace.for_each_plane(|plane, _| {
+        check_cancel(cancel)?;
         let (normalized, _) = normalize_plane(plane);
         let lambda = lambda_plane(&normalized, derived.inv_e_pi_r2);
+        check_cancel(cancel)?;
         match (params.device, algorithm) {
-            (Device::Cpu, Algo::Pixel) => Ok(render_pixelwise(&lambda, params, &derived)),
-            (Device::Cpu, Algo::Grain) => Ok(render_grainwise(&lambda, params, &derived)),
+            (Device::Cpu, Algo::Pixel) => render_pixelwise(&lambda, params, &derived, cancel),
+            (Device::Cpu, Algo::Grain) => render_grainwise(&lambda, params, &derived, cancel),
             (Device::Gpu, Algo::Pixel) => {
+                check_cancel(cancel)?;
                 let ctx = gpu_ctx.expect("gpu context initialized");
                 wgpu::render_pixelwise_gpu(ctx, &lambda, params, &derived)
             }
             (Device::Gpu, Algo::Grain) => {
+                check_cancel(cancel)?;
                 let ctx = gpu_ctx.expect("gpu context initialized");
                 wgpu::render_grainwise_gpu(ctx, &lambda, params, &derived)
             }
@@ -121,14 +165,22 @@ fn render_from_workspace(
         }
     })?;
 
+    check_cancel(cancel)?;
     let stats = make_stats(params, &derived, algorithm);
+    check_cancel(cancel)?;
     let image = workspace.into_rgb_image()?;
     Ok((image, stats))
 }
 
-fn derive_for_workspace(workspace: &Workspace, params: &Params) -> RenderResult<(Derived, Algo)> {
+fn derive_for_workspace_impl(
+    workspace: &Workspace,
+    params: &Params,
+    cancel: CancelCheck<'_>,
+) -> RenderResult<(Derived, Algo)> {
+    check_cancel(cancel)?;
     let input_size = workspace.dimensions();
     let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
+    check_cancel(cancel)?;
     let algorithm = choose_algorithm(params, &derived);
     Ok((derived, algorithm))
 }

@@ -8,7 +8,8 @@ use eframe::egui;
 
 use film_grain::{
     Algo, ColorMode, Device, InputImage, MaxRadius, Params, ParamsBuilder, RadiusDist, RenderError,
-    RenderStats, Roi, default_cell_delta, dry_run_with_input_image, render_with_input_image,
+    RenderStats, Roi, default_cell_delta, dry_run_with_input_image_cancelable,
+    render_with_input_image_cancelable,
 };
 use image::RgbImage;
 use rand::Rng;
@@ -975,6 +976,21 @@ struct RenderWorker {
     gpu_available: bool,
 }
 
+struct CancelToken {
+    job_id: u64,
+    latest: Arc<AtomicU64>,
+}
+
+impl CancelToken {
+    fn new(job_id: u64, latest: Arc<AtomicU64>) -> Self {
+        Self { job_id, latest }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.latest.load(Ordering::SeqCst) != self.job_id
+    }
+}
+
 impl RenderWorker {
     fn new() -> Self {
         let (job_tx, job_rx) = mpsc::channel::<RenderJob>();
@@ -991,27 +1007,41 @@ impl RenderWorker {
                     if job.id != current {
                         continue;
                     }
+                    let token = CancelToken::new(job.id, worker_latest.clone());
+                    let cancel = || token.is_cancelled();
                     let outcome = match job.kind {
-                        RenderTaskKind::Preview => {
-                            render_with_input_image(job.input.as_ref(), &job.params)
-                                .map(|(image, stats)| JobResult::Preview { image, stats })
-                        }
-                        RenderTaskKind::StatsOnly => {
-                            let stats = dry_run_with_input_image(job.input.as_ref(), &job.params);
-                            stats.map(|stats| JobResult::Stats { stats })
-                        }
+                        RenderTaskKind::Preview => render_with_input_image_cancelable(
+                            job.input.as_ref(),
+                            &job.params,
+                            &cancel,
+                        )
+                        .map(|(image, stats)| JobResult::Preview { image, stats }),
+                        RenderTaskKind::StatsOnly => dry_run_with_input_image_cancelable(
+                            job.input.as_ref(),
+                            &job.params,
+                            &cancel,
+                        )
+                        .map(|stats| JobResult::Stats { stats }),
                     };
-                    if job.id != worker_latest.load(Ordering::SeqCst) {
+                    if token.is_cancelled() {
                         continue;
                     }
-                    if result_tx
-                        .send(RenderOutcome {
-                            id: job.id,
-                            outcome,
-                        })
-                        .is_err()
-                    {
-                        break;
+                    match outcome {
+                        Err(RenderError::Cancelled) => continue,
+                        outcome => {
+                            if worker_latest.load(Ordering::SeqCst) != job.id {
+                                continue;
+                            }
+                            if result_tx
+                                .send(RenderOutcome {
+                                    id: job.id,
+                                    outcome,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                     }
                 }
             })
@@ -1025,7 +1055,6 @@ impl RenderWorker {
             gpu_available,
         }
     }
-
     fn request(
         &mut self,
         input: Arc<InputImage>,
