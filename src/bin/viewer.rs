@@ -4,7 +4,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui;
+use eframe::{egui, wgpu};
 
 use film_grain::{
     Algo, ColorMode, Device, InputImage, MaxRadius, Params, ParamsBuilder, RadiusDist, RenderError,
@@ -17,7 +17,10 @@ use rfd::FileDialog;
 
 fn main() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions::default();
-    options.renderer = eframe::Renderer::Glow;
+    options.renderer = eframe::Renderer::Wgpu;
+    // Keep eframe on the modern GPU path (Vulkan/Metal/DX12) to avoid the legacy GL stack.
+    options.wgpu_options.supported_backends = wgpu::Backends::PRIMARY;
+    options.wgpu_options.power_preference = wgpu::PowerPreference::HighPerformance;
     options.follow_system_theme = false;
     options.default_theme = eframe::Theme::Dark;
     options.viewport = egui::viewport::ViewportBuilder::default()
