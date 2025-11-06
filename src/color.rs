@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use image::{DynamicImage, GenericImageView, RgbImage};
 
 use crate::RenderError;
@@ -22,18 +24,23 @@ enum WorkspaceKind {
 impl Workspace {
     pub fn load(params: &Params) -> Result<Self, RenderError> {
         let image = image::open(&params.input_path)?;
-        let cropped = apply_roi(image, params.roi.as_ref())?;
-        match params.color_mode {
+        Self::from_dynamic_image(image, params.color_mode, params.roi.as_ref())
+    }
+
+    pub fn from_dynamic_image(
+        image: DynamicImage,
+        color_mode: ColorMode,
+        roi: Option<&Roi>,
+    ) -> Result<Self, RenderError> {
+        let cropped = apply_roi(image, roi)?;
+        match color_mode {
             ColorMode::Luma => load_luma_workspace(cropped),
             ColorMode::Rgb => load_rgb_workspace(cropped),
         }
     }
 
     pub fn dimensions(&self) -> (usize, usize) {
-        match &self.kind {
-            WorkspaceKind::Luma { y, .. } => (y.width, y.height),
-            WorkspaceKind::Rgb { planes } => (planes[0].width, planes[0].height),
-        }
+        dimensions_of(&self.kind)
     }
 
     pub fn for_each_plane<F>(&mut self, mut f: F) -> Result<(), RenderError>
@@ -103,6 +110,46 @@ impl Workspace {
                     .ok_or_else(|| RenderError::Message("failed to create RGB image".into()))
             }
         }
+    }
+}
+
+pub struct InputImage {
+    color_mode: ColorMode,
+    kind: WorkspaceKind,
+}
+
+impl InputImage {
+    pub fn from_path(
+        path: &Path,
+        color_mode: ColorMode,
+        roi: Option<&Roi>,
+    ) -> Result<Self, RenderError> {
+        let image = image::open(path)?;
+        Self::from_dynamic_image(image, color_mode, roi)
+    }
+
+    pub fn from_dynamic_image(
+        image: DynamicImage,
+        color_mode: ColorMode,
+        roi: Option<&Roi>,
+    ) -> Result<Self, RenderError> {
+        let workspace = Workspace::from_dynamic_image(image, color_mode, roi)?;
+        let kind = workspace.kind;
+        Ok(Self { color_mode, kind })
+    }
+
+    pub fn to_workspace(&self) -> Workspace {
+        Workspace {
+            kind: clone_workspace_kind(&self.kind),
+        }
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        dimensions_of(&self.kind)
+    }
+
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
     }
 }
 
@@ -187,4 +234,24 @@ fn clamp01(value: f32) -> f32 {
 
 fn to_u8(value: f32) -> u8 {
     (clamp01(value) * 255.0 + 0.5).floor() as u8
+}
+
+fn dimensions_of(kind: &WorkspaceKind) -> (usize, usize) {
+    match kind {
+        WorkspaceKind::Luma { y, .. } => (y.width, y.height),
+        WorkspaceKind::Rgb { planes } => (planes[0].width, planes[0].height),
+    }
+}
+
+fn clone_workspace_kind(kind: &WorkspaceKind) -> WorkspaceKind {
+    match kind {
+        WorkspaceKind::Luma { y, cb, cr } => WorkspaceKind::Luma {
+            y: y.clone(),
+            cb: cb.clone(),
+            cr: cr.clone(),
+        },
+        WorkspaceKind::Rgb { planes } => WorkspaceKind::Rgb {
+            planes: [planes[0].clone(), planes[1].clone(), planes[2].clone()],
+        },
+    }
 }

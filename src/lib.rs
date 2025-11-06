@@ -17,6 +17,7 @@ mod pixelwise;
 mod rng;
 pub mod wgpu;
 
+pub use color::InputImage;
 pub use params::{
     Algo, CliArgs, ColorMode, Device, MaxRadius, Params, ParamsError, ParamsResult, RadiusDist,
     Roi, build_params, default_cell_delta,
