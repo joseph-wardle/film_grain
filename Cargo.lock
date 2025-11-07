@@ -1160,7 +1160,6 @@ dependencies = [
  "image",
  "js-sys",
  "log",
- "pollster",
  "rand",
  "rand_distr",
  "rayon",

@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
+use std::task::Poll;
 
 use bytemuck::{Pod, Zeroable};
+use futures::{channel::oneshot, executor::block_on, future::poll_fn, FutureExt};
 use log::{error, warn};
-use pollster::block_on;
 use wgpu::util::DeviceExt;
 
 use crate::RenderError;
@@ -62,18 +63,38 @@ impl Default for GpuContextCache {
 
 impl GpuContextCache {
     fn get(&self) -> Result<Arc<GpuContext>, RenderError> {
-        let mut guard = self.ctx.lock().unwrap_or_else(|err| err.into_inner());
-        if let Some(ctx) = guard.as_ref() {
-            return Ok(ctx.clone());
+        if let Some(ctx) = self.cached() {
+            return Ok(ctx);
         }
-        let ctx = Arc::new(init()?);
-        *guard = Some(ctx.clone());
-        Ok(ctx)
+        let ctx = Arc::new(init_blocking()?);
+        Ok(self.store(ctx))
+    }
+
+    async fn get_async(&self) -> Result<Arc<GpuContext>, RenderError> {
+        if let Some(ctx) = self.cached() {
+            return Ok(ctx);
+        }
+        let ctx = Arc::new(init_async().await?);
+        Ok(self.store(ctx))
     }
 
     fn invalidate(&self) {
         let mut guard = self.ctx.lock().unwrap_or_else(|err| err.into_inner());
         guard.take();
+    }
+
+    fn cached(&self) -> Option<Arc<GpuContext>> {
+        let guard = self.ctx.lock().unwrap_or_else(|err| err.into_inner());
+        guard.as_ref().cloned()
+    }
+
+    fn store(&self, ctx: Arc<GpuContext>) -> Arc<GpuContext> {
+        let mut guard = self.ctx.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            return existing.clone();
+        }
+        *guard = Some(ctx.clone());
+        ctx
     }
 }
 
@@ -85,33 +106,67 @@ pub fn context() -> Result<Arc<GpuContext>, RenderError> {
     cache().get()
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub async fn context_async() -> Result<Arc<GpuContext>, RenderError> {
+    cache().get_async().await
+}
+
 fn invalidate_context() {
     if let Some(cache) = GPU_CONTEXT.get() {
         cache.invalidate();
     }
 }
 
-fn init() -> Result<GpuContext, RenderError> {
-    let instance = wgpu::Instance::default();
-    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+fn create_instance() -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: preferred_backends(),
+        dx12_shader_compiler: Default::default(),
+        flags: wgpu::InstanceFlags::empty(),
+        gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
+    })
+}
+
+fn preferred_backends() -> wgpu::Backends {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wgpu::Backends::BROWSER_WEBGPU
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wgpu::Backends::PRIMARY | wgpu::Backends::GL
+    }
+}
+
+fn init_blocking() -> Result<GpuContext, RenderError> {
+    block_on(init_async())
+}
+
+async fn init_async() -> Result<GpuContext, RenderError> {
+    let instance = create_instance();
+    let adapter_options = wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
-    }))
-    .ok_or_else(|| RenderError::Gpu("no compatible GPU adapter found".into()))?;
+    };
+    let adapter = instance
+        .request_adapter(&adapter_options)
+        .await
+        .ok_or_else(|| RenderError::Gpu("no compatible GPU adapter found".into()))?;
 
     let adapter_limits = adapter.limits();
-    let (device, queue) = block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("filmgrain-device"),
-            required_features: wgpu::Features::empty(),
-            // Request the full limits the adapter reports so large outputs aren't capped by the
-            // conservative WebGPU defaults (e.g. 256 MiB max buffer size).
-            required_limits: adapter_limits,
-        },
-        None,
-    ))
-    .map_err(|err| RenderError::Gpu(format!("request_device failed: {err}")))?;
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("filmgrain-device"),
+                required_features: wgpu::Features::empty(),
+                // Request the full limits the adapter reports so large outputs aren't capped by the
+                // conservative WebGPU defaults (e.g. 256 MiB max buffer size).
+                required_limits: adapter_limits,
+            },
+            None,
+        )
+        .await
+        .map_err(|err| RenderError::Gpu(format!("request_device failed: {err}")))?;
 
     device.on_uncaptured_error(Box::new(|err| {
         log_uncaptured_error(err);
@@ -450,17 +505,8 @@ fn render_pixelwise_gpu_inner(
     encoder.copy_buffer_to_buffer(&out_buffer, 0, &staging_buffer, 0, out_bytes as u64);
     ctx.queue.submit(std::iter::once(encoder.finish()));
 
-    let buffer_slice = staging_buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
-        sender.send(res).ok();
-    });
-    ctx.device.poll(wgpu::Maintain::Wait);
-    receiver
-        .recv()
-        .unwrap()
-        .map_err(|_| RenderError::Gpu("map_async failed for pixel output".into()))?;
-    let data = buffer_slice.get_mapped_range();
+    wait_for_buffer_map_sync(&ctx.device, staging_buffer.slice(..), "pixel output")?;
+    let data = staging_buffer.slice(..).get_mapped_range();
     let mut output_plane = Plane::new(d.output_width, d.output_height);
     let floats: &[f32] = bytemuck::cast_slice(&data);
     output_plane.pixels_mut().copy_from_slice(floats);
@@ -638,17 +684,8 @@ fn render_grainwise_gpu_inner(
     encoder.copy_buffer_to_buffer(&out_buffer, 0, &staging_buffer, 0, out_bytes as u64);
     ctx.queue.submit(std::iter::once(encoder.finish()));
 
-    let buffer_slice = staging_buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
-        sender.send(res).ok();
-    });
-    ctx.device.poll(wgpu::Maintain::Wait);
-    receiver
-        .recv()
-        .unwrap()
-        .map_err(|_| RenderError::Gpu("map_async failed for grain output".into()))?;
-    let data = buffer_slice.get_mapped_range();
+    wait_for_buffer_map_sync(&ctx.device, staging_buffer.slice(..), "grain output")?;
+    let data = staging_buffer.slice(..).get_mapped_range();
     let mut output_plane = Plane::new(d.output_width, d.output_height);
     let floats: &[f32] = bytemuck::cast_slice(&data);
     output_plane.pixels_mut().copy_from_slice(floats);
@@ -759,4 +796,39 @@ fn log_uncaptured_error(err: wgpu::Error) {
     } else {
         warn!("{msg}", msg = &message);
     }
+}
+
+async fn wait_for_buffer_map(
+    device: &wgpu::Device,
+    slice: wgpu::BufferSlice<'_>,
+    label: &'static str,
+) -> Result<(), RenderError> {
+    let (sender, mut receiver) = oneshot::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    poll_fn(|cx| {
+        match receiver.poll_unpin(cx) {
+            Poll::Ready(Ok(Ok(()))) => Poll::Ready(Ok(())),
+            Poll::Ready(Ok(Err(err))) => {
+                Poll::Ready(Err(RenderError::Gpu(format!("{label} map_async failed: {err}"))))
+            }
+            Poll::Ready(Err(_)) => {
+                Poll::Ready(Err(RenderError::Gpu(format!("{label} map_async cancelled"))))
+            }
+            Poll::Pending => {
+                device.poll(wgpu::Maintain::Poll);
+                Poll::Pending
+            }
+        }
+    })
+    .await
+}
+
+fn wait_for_buffer_map_sync(
+    device: &wgpu::Device,
+    slice: wgpu::BufferSlice<'_>,
+    label: &'static str,
+) -> Result<(), RenderError> {
+    block_on(wait_for_buffer_map(device, slice, label))
 }
