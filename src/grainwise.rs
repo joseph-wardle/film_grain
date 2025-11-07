@@ -109,8 +109,9 @@ pub fn render_grainwise(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let render_result: Result<(), RenderError> =
-            (0..derived.input_height).into_par_iter().try_for_each(|y| process_row(y));
+        let render_result: Result<(), RenderError> = (0..derived.input_height)
+            .into_par_iter()
+            .try_for_each(|y| process_row(y));
         render_result?;
     }
 

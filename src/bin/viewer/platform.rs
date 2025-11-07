@@ -65,14 +65,8 @@ impl LoadedImage {
 
 #[derive(Clone)]
 pub enum SourceOrigin {
-    FilePath {
-        path: PathBuf,
-    },
-    #[cfg(target_arch = "wasm32")]
-    BrowserFile {
-        file_name: String,
-        bytes: Arc<Vec<u8>>,
-    },
+    FilePath { path: PathBuf },
+    InMemory { name: String, bytes: Arc<Vec<u8>> },
 }
 
 impl SourceOrigin {
@@ -80,24 +74,24 @@ impl SourceOrigin {
         Self::FilePath { path }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub fn browser_file(file_name: String, bytes: Arc<Vec<u8>>) -> Self {
-        Self::BrowserFile { file_name, bytes }
+    pub fn in_memory(name: impl Into<String>, bytes: Arc<Vec<u8>>) -> Self {
+        Self::InMemory {
+            name: name.into(),
+            bytes,
+        }
     }
 
     pub fn display_name(&self) -> String {
         match self {
             SourceOrigin::FilePath { path } => path.display().to_string(),
-            #[cfg(target_arch = "wasm32")]
-            SourceOrigin::BrowserFile { file_name, .. } => file_name.clone(),
+            SourceOrigin::InMemory { name, .. } => name.clone(),
         }
     }
 
     pub fn input_path(&self) -> PathBuf {
         match self {
             SourceOrigin::FilePath { path } => path.clone(),
-            #[cfg(target_arch = "wasm32")]
-            SourceOrigin::BrowserFile { file_name, .. } => PathBuf::from(file_name),
+            SourceOrigin::InMemory { name, .. } => PathBuf::from(name),
         }
     }
 
@@ -114,9 +108,8 @@ impl SourceOrigin {
     ) -> Result<InputImage, RenderError> {
         match self {
             SourceOrigin::FilePath { path } => InputImage::from_path(path, color_mode, roi),
-            #[cfg(target_arch = "wasm32")]
-            SourceOrigin::BrowserFile { bytes, .. } => {
-                InputImage::from_bytes(bytes, color_mode, roi)
+            SourceOrigin::InMemory { bytes, .. } => {
+                InputImage::from_bytes(bytes.as_ref(), color_mode, roi)
             }
         }
     }
@@ -278,7 +271,7 @@ mod web {
         let roi = options.roi.as_ref();
         let cache = InputImage::from_bytes(bytes.as_ref(), options.color_mode, roi)
             .map_err(|err| err.to_string())?;
-        let origin = SourceOrigin::browser_file(handle.file_name(), bytes);
+        let origin = SourceOrigin::in_memory(handle.file_name(), bytes);
         Ok(Some(LoadedImage::new(origin, Arc::new(cache))))
     }
 

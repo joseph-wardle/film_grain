@@ -10,6 +10,8 @@ use futures::channel::oneshot;
 use futures::task::noop_waker_ref;
 
 #[cfg(target_arch = "wasm32")]
+use console_error_panic_hook;
+#[cfg(target_arch = "wasm32")]
 use film_grain::wgpu::WEBGPU_MAX_OUTPUT_PIXELS;
 use film_grain::{
     Algo, ColorMode, Device, InputImage, MaxRadius, Params, ParamsBuilder, RadiusDist, RenderError,
@@ -18,6 +20,8 @@ use film_grain::{
 };
 use image::{GrayImage, RgbImage};
 use rand::Rng;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
@@ -51,8 +55,17 @@ fn main() -> eframe::Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn main() {
-    panic!("web bootstrap coming soon; native build only for now");
+#[wasm_bindgen(start)]
+pub async fn start() -> Result<(), JsValue> {
+    console_error_panic_hook::set_once();
+    eframe::WebRunner::new()
+        .start(
+            "canvas",
+            eframe::WebOptions::default(),
+            Box::new(|cc| Box::new(FilmGrainViewer::new(cc))),
+        )
+        .await?;
+    Ok(())
 }
 
 struct FilmGrainViewer {
@@ -71,6 +84,7 @@ impl FilmGrainViewer {
 
 impl eframe::App for FilmGrainViewer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.state.handle_file_drops(ctx);
         self.state.poll_platform_events(ctx);
         self.state.poll_worker(ctx);
         self.state.draw(ctx);
@@ -101,6 +115,32 @@ impl ViewerState {
             worker_runtime: RenderWorker::new(),
             last_error: None,
             platform: create_platform_io(),
+        }
+    }
+
+    fn handle_file_drops(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        for file in dropped {
+            if let Some(bytes) = file.bytes.clone() {
+                let arc = Arc::new(bytes.as_ref().to_vec());
+                let name = if file.name.is_empty() {
+                    "dropped-image".to_owned()
+                } else {
+                    file.name.clone()
+                };
+                if let Err(err) = self.load_image_from_bytes(name, arc) {
+                    self.set_error(err);
+                }
+            } else if let Some(path) = file.path.clone() {
+                if let Err(err) = self.load_image_from_path(path) {
+                    self.set_error(err);
+                }
+            } else {
+                self.set_error("dropped file did not contain data".to_owned());
+            }
         }
     }
 
@@ -139,7 +179,7 @@ impl ViewerState {
     fn draw(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("viewer_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Load Image…").clicked() {
+                if ui.button("Browse files…").clicked() {
                     self.prompt_and_load();
                 }
                 let can_save = self.preview.has_image();
@@ -210,6 +250,10 @@ impl ViewerState {
                 ui.heading("Preview");
             });
             ui.separator();
+            if !self.preview.has_image() {
+                self.drop_zone_ui(ctx, ui);
+                ui.separator();
+            }
             egui::Frame::canvas(ui.style()).show(ui, |ui| {
                 ui.set_min_height(ui.available_height());
                 ui.set_min_width(ui.available_width());
@@ -232,6 +276,39 @@ impl ViewerState {
                 });
             });
         });
+    }
+
+    fn drop_zone_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let visuals = ui.visuals();
+        let fill = if hovering {
+            visuals.extreme_bg_color
+        } else {
+            visuals.faint_bg_color
+        };
+        let stroke_color = if hovering {
+            visuals.hyperlink_color
+        } else {
+            visuals.widgets.inactive.bg_fill
+        };
+        egui::Frame::group(ui.style())
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0, stroke_color))
+            .rounding(6.0)
+            .inner_margin(egui::Margin::symmetric(16.0, 20.0))
+            .show(ui, |ui| {
+                ui.set_min_height(180.0);
+                ui.vertical_centered(|ui| {
+                    ui.heading("Drag & drop an image to get started");
+                    ui.add_space(6.0);
+                    ui.label("PNG, JPEG, TIFF, BMP, HDR, or GIF");
+                    ui.add_space(12.0);
+                    if ui.button("Browse files…").clicked() {
+                        self.prompt_and_load();
+                    }
+                    ui.small("Dropped images stay in memory, so reloads are instant.");
+                });
+            });
     }
 
     fn poll_worker(&mut self, ctx: &egui::Context) {
@@ -349,6 +426,20 @@ impl ViewerState {
     fn prompt_and_load(&mut self) {
         let options = LoadDialogOptions::new(self.params.color_mode);
         self.platform.request_load_image(options);
+    }
+
+    fn load_image_from_path(&mut self, path: PathBuf) -> Result<(), String> {
+        let cache = InputImage::from_path(&path, self.params.color_mode, None)
+            .map_err(|err| err.to_string())?;
+        let loaded = LoadedImage::new(SourceOrigin::file_path(path), Arc::new(cache));
+        self.apply_loaded_image(loaded)
+    }
+
+    fn load_image_from_bytes(&mut self, name: String, bytes: Arc<Vec<u8>>) -> Result<(), String> {
+        let cache = InputImage::from_bytes(bytes.as_ref(), self.params.color_mode, None)
+            .map_err(|err| err.to_string())?;
+        let loaded = LoadedImage::new(SourceOrigin::in_memory(name, bytes), Arc::new(cache));
+        self.apply_loaded_image(loaded)
     }
 
     fn prompt_and_save(&mut self) {
