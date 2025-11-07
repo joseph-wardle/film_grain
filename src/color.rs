@@ -130,6 +130,15 @@ impl InputImage {
         Self::from_dynamic_image(image, color_mode, roi)
     }
 
+    pub fn from_bytes(
+        bytes: &[u8],
+        color_mode: ColorMode,
+        roi: Option<&Roi>,
+    ) -> Result<Self, RenderError> {
+        let image = image::load_from_memory(bytes)?;
+        Self::from_dynamic_image(image, color_mode, roi)
+    }
+
     pub fn from_dynamic_image(
         image: DynamicImage,
         color_mode: ColorMode,

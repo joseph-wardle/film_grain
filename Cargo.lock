@@ -1157,6 +1157,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "image",
+ "js-sys",
  "log",
  "pollster",
  "rand",
@@ -1165,6 +1166,9 @@ dependencies = [
  "rfd",
  "statrs",
  "thiserror 1.0.69",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
 ]
 

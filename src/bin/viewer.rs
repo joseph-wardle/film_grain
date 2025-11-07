@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -13,7 +13,21 @@ use film_grain::{
 };
 use image::{GrayImage, RgbImage};
 use rand::Rng;
-use rfd::FileDialog;
+
+#[path = "viewer/platform.rs"]
+mod platform;
+
+use platform::{
+    create_platform_io,
+    ActivePlatformIo,
+    LoadDialogOptions,
+    LoadedImage,
+    PlatformEvent,
+    PlatformIo,
+    PreviewSaveRequest,
+    SaveOutcome,
+    SourceOrigin,
+};
 
 fn main() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions::default();
@@ -49,6 +63,7 @@ impl FilmGrainViewer {
 
 impl eframe::App for FilmGrainViewer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.state.poll_platform_events(ctx);
         self.state.poll_worker(ctx);
         self.state.draw(ctx);
     }
@@ -60,9 +75,10 @@ struct ViewerState {
     last_stats: Option<RenderStats>,
     preview: PreviewState,
     worker_status: WorkerState,
-    pending_save_path: Option<PathBuf>,
+    pending_save: Option<SavedPreview>,
     worker_runtime: RenderWorker,
     last_error: Option<String>,
+    platform: ActivePlatformIo,
 }
 
 impl ViewerState {
@@ -73,9 +89,42 @@ impl ViewerState {
             last_stats: None,
             preview: PreviewState::default(),
             worker_status: WorkerState::default(),
-            pending_save_path: None,
+            pending_save: None,
             worker_runtime: RenderWorker::new(),
             last_error: None,
+            platform: create_platform_io(),
+        }
+    }
+
+    fn poll_platform_events(&mut self, ctx: &egui::Context) {
+        let mut updated = false;
+        while let Some(event) = self.platform.try_recv() {
+            match event {
+                PlatformEvent::ImageLoaded(result) => match result {
+                    Ok(Some(loaded)) => {
+                        if let Err(err) = self.apply_loaded_image(loaded) {
+                            self.set_error(err);
+                        } else {
+                            self.pending_save = None;
+                            self.clear_error();
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => self.set_error(err),
+                },
+                PlatformEvent::PreviewSaved(result) => match result {
+                    Ok(Some(outcome)) => {
+                        self.pending_save = Some(outcome.into());
+                        self.clear_error();
+                    }
+                    Ok(None) => {}
+                    Err(err) => self.set_error(err),
+                },
+            }
+            updated = true;
+        }
+        if updated {
+            ctx.request_repaint();
         }
     }
 
@@ -112,8 +161,8 @@ impl ViewerState {
             if let Some(err) = &self.last_error {
                 ui.colored_label(egui::Color32::LIGHT_RED, format!("Error: {err}"));
             }
-            if let Some(path) = &self.pending_save_path {
-                ui.label(format!("Last saved: {}", path.display()));
+            if let Some(record) = &self.pending_save {
+                ui.label(record.label());
             }
         });
 
@@ -209,7 +258,7 @@ impl ViewerState {
         if let Some(source) = &self.source {
             format!(
                 "{} ({} × {}, {:?})",
-                source.path.display(),
+                source.display_name(),
                 source.width,
                 source.height,
                 source.cache.color_mode()
@@ -273,9 +322,7 @@ impl ViewerState {
             .as_mut()
             .ok_or_else(|| "no image loaded".to_owned())?;
         let roi = self.params.current_roi();
-        let cache = InputImage::from_path(&source.path, self.params.color_mode, roi.as_ref())
-            .map_err(|err| err.to_string())?;
-        let cache = Arc::new(cache);
+        let cache = source.reload_cache(self.params.color_mode, roi.as_ref())?;
         source.set_cache(cache.clone());
         self.params.sync_with_source(source);
         self.preview.clear();
@@ -285,26 +332,27 @@ impl ViewerState {
     }
 
     fn prompt_and_load(&mut self) {
-        if let Some(path) = FileDialog::new()
-            .add_filter(
-                "Images",
-                &["png", "jpg", "jpeg", "tif", "tiff", "bmp", "hdr", "gif"],
-            )
-            .pick_file()
-        {
-            if let Err(err) = self.load_image_from_path(path.clone()) {
-                self.set_error(err);
-            } else {
-                self.pending_save_path = None;
-            }
-        }
+        let options = LoadDialogOptions::new(self.params.color_mode);
+        self.platform.request_load_image(options);
     }
 
-    fn load_image_from_path(&mut self, path: PathBuf) -> Result<(), String> {
-        let cache = InputImage::from_path(&path, self.params.color_mode, None)
-            .map_err(|err| err.to_string())?;
-        let cache = Arc::new(cache);
-        let source = SourceImage::new(path.clone(), cache.clone());
+    fn prompt_and_save(&mut self) {
+        let Some((image, mode)) = self.preview.latest_image_info() else {
+            self.set_error("no preview image available to save".to_owned());
+            return;
+        };
+        let default_name = self
+            .source
+            .as_ref()
+            .map(|source| source.default_file_name())
+            .unwrap_or_else(|| "filmgrain.png".to_owned());
+        let request = PreviewSaveRequest::new(image.clone(), mode, default_name);
+        self.platform.request_save_preview(request);
+    }
+
+    fn apply_loaded_image(&mut self, loaded: LoadedImage) -> Result<(), String> {
+        let LoadedImage { origin, cache } = loaded;
+        let source = SourceImage::new(origin, cache.clone());
         self.params.sync_with_source(&source);
         self.source = Some(source);
         self.preview.clear();
@@ -320,34 +368,6 @@ impl ViewerState {
         Ok(())
     }
 
-    fn prompt_and_save(&mut self) {
-        let Some((image, mode)) = self.preview.latest_image_info() else {
-            self.set_error("no preview image available to save".to_owned());
-            return;
-        };
-        let default_name = self
-            .source
-            .as_ref()
-            .map(|source| default_output_path(&source.path))
-            .and_then(|path| {
-                path.file_name()
-                    .and_then(|s| s.to_str().map(|t| t.to_owned()))
-            })
-            .unwrap_or_else(|| "filmgrain.png".to_owned());
-        if let Some(path) = FileDialog::new()
-            .set_file_name(&default_name)
-            .add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "bmp"])
-            .save_file()
-        {
-            if let Err(err) = save_preview_image(image, mode, &path) {
-                self.set_error(err.to_string());
-            } else {
-                self.pending_save_path = Some(path);
-                self.clear_error();
-            }
-        }
-    }
-
     fn set_error(&mut self, message: String) {
         self.last_error = Some(message);
     }
@@ -358,17 +378,17 @@ impl ViewerState {
 }
 
 struct SourceImage {
-    path: PathBuf,
+    origin: SourceOrigin,
     cache: Arc<InputImage>,
     width: usize,
     height: usize,
 }
 
 impl SourceImage {
-    fn new(path: PathBuf, cache: Arc<InputImage>) -> Self {
+    fn new(origin: SourceOrigin, cache: Arc<InputImage>) -> Self {
         let (width, height) = cache.dimensions();
         Self {
-            path,
+            origin,
             cache,
             width,
             height,
@@ -380,6 +400,63 @@ impl SourceImage {
         self.cache = cache;
         self.width = width;
         self.height = height;
+    }
+
+    fn display_name(&self) -> String {
+        self.origin.display_name()
+    }
+
+    fn input_path(&self) -> PathBuf {
+        self.origin.input_path()
+    }
+
+    fn default_output_path(&self) -> PathBuf {
+        self.origin.default_output_path()
+    }
+
+    fn default_file_name(&self) -> String {
+        self.default_output_path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("filmgrain.png")
+            .to_owned()
+    }
+
+    fn reload_cache(
+        &self,
+        color_mode: ColorMode,
+        roi: Option<&Roi>,
+    ) -> Result<Arc<InputImage>, String> {
+        self.origin
+            .reload_image(color_mode, roi)
+            .map(Arc::new)
+            .map_err(|err| err.to_string())
+    }
+}
+
+enum SavedPreview {
+    File(PathBuf),
+    #[cfg(target_arch = "wasm32")]
+    Downloaded(String),
+}
+
+impl SavedPreview {
+    fn label(&self) -> String {
+        match self {
+            SavedPreview::File(path) => format!("Last saved: {}", path.display()),
+            #[cfg(target_arch = "wasm32")]
+            SavedPreview::Downloaded(name) => format!("Downloaded: {name}"),
+        }
+    }
+}
+
+impl From<SaveOutcome> for SavedPreview {
+    fn from(value: SaveOutcome) -> Self {
+        match value {
+            SaveOutcome::File(path) => SavedPreview::File(path),
+            #[cfg(target_arch = "wasm32")]
+            SaveOutcome::Downloaded { file_name } => SavedPreview::Downloaded(file_name),
+        }
     }
 }
 
@@ -477,8 +554,8 @@ impl Default for InteractiveParams {
 impl InteractiveParams {
     fn to_builder(&self, source: &SourceImage, dry_run: bool) -> ParamsBuilder {
         ParamsBuilder {
-            input_path: source.path.clone(),
-            output_path: default_output_path(&source.path),
+            input_path: source.input_path(),
+            output_path: source.default_output_path(),
             radius_dist: self.radius_dist,
             radius_mean: self.radius_mean,
             radius_stddev: self.radius_stddev,
@@ -1102,16 +1179,6 @@ const DISPLAY_Y_COEFF_R: f32 = 0.2126;
 const DISPLAY_Y_COEFF_G: f32 = 0.7152;
 const DISPLAY_Y_COEFF_B: f32 = 0.0722;
 
-fn save_preview_image(image: &RgbImage, mode: ColorMode, path: &Path) -> image::ImageResult<()> {
-    match mode {
-        ColorMode::Rgb => image.save(path),
-        ColorMode::Luma => {
-            let gray = luma_image(image);
-            gray.save(path)
-        }
-    }
-}
-
 fn color_image_for_display(image: &RgbImage, mode: ColorMode) -> egui::ColorImage {
     let width = image.width() as usize;
     let height = image.height() as usize;
@@ -1272,10 +1339,4 @@ fn stats_summary(stats: &RenderStats) -> String {
         stats.sigma_ratio,
         stats.rm_ratio
     )
-}
-
-fn default_output_path(source: &Path) -> PathBuf {
-    let mut result = source.to_path_buf();
-    result.set_extension("filmgrain.png");
-    result
 }
