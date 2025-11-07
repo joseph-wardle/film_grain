@@ -1,3 +1,7 @@
+#[cfg(target_arch = "wasm32")]
+#[allow(unused_extern_crates)]
+extern crate self as film_grain;
+
 use choose::choose_algorithm;
 use color::Workspace;
 use grainwise::render_grainwise;
@@ -16,6 +20,12 @@ mod model;
 mod pixelwise;
 mod rng;
 pub mod wgpu;
+
+// For the web build, include the viewer binary source as a module so
+// wasm-pack (which builds the lib crate) gets the #[wasm_bindgen(start)] entry.
+#[cfg(target_arch = "wasm32")]
+#[path = "bin/viewer.rs"]
+mod viewer;
 
 pub use color::InputImage;
 pub use params::{
