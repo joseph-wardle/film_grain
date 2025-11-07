@@ -11,7 +11,7 @@ use film_grain::{
     RenderStats, Roi, default_cell_delta, dry_run_with_input_image_cancelable,
     render_with_input_image_cancelable,
 };
-use image::RgbImage;
+use image::{GrayImage, RgbImage};
 use rand::Rng;
 use rfd::FileDialog;
 
@@ -302,7 +302,6 @@ impl ViewerState {
         let cache = Arc::new(cache);
         let source = SourceImage::new(path.clone(), cache.clone());
         self.params.sync_with_source(&source);
-        self.params.update_output_defaults(&path);
         self.source = Some(source);
         self.preview.clear();
         self.last_stats = None;
@@ -318,14 +317,14 @@ impl ViewerState {
     }
 
     fn prompt_and_save(&mut self) {
-        let Some(image) = self.preview.latest_image() else {
+        let Some((image, mode)) = self.preview.latest_image_info() else {
             self.set_error("no preview image available to save".to_owned());
             return;
         };
         let default_name = self
             .source
             .as_ref()
-            .map(|source| self.params.resolve_output_path(&source.path))
+            .map(|source| default_output_path(&source.path))
             .and_then(|path| {
                 path.file_name()
                     .and_then(|s| s.to_str().map(|t| t.to_owned()))
@@ -336,7 +335,7 @@ impl ViewerState {
             .add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "bmp"])
             .save_file()
         {
-            if let Err(err) = image.clone().save(&path) {
+            if let Err(err) = save_preview_image(image, mode, &path) {
                 self.set_error(err.to_string());
             } else {
                 self.pending_save_path = Some(path);
@@ -385,6 +384,7 @@ struct PreviewState {
     texture: Option<egui::TextureHandle>,
     generation: u64,
     last_image: Option<RgbImage>,
+    last_mode: Option<ColorMode>,
 }
 
 impl PreviewState {
@@ -394,19 +394,21 @@ impl PreviewState {
         self.generation = self.generation.wrapping_add(1);
         self.texture = Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()));
         self.last_image = Some(image);
+        self.last_mode = Some(mode);
     }
 
     fn has_image(&self) -> bool {
         self.last_image.is_some()
     }
 
-    fn latest_image(&self) -> Option<&RgbImage> {
-        self.last_image.as_ref()
+    fn latest_image_info(&self) -> Option<(&RgbImage, ColorMode)> {
+        Some((self.last_image.as_ref()?, self.last_mode?))
     }
 
     fn clear(&mut self) {
         self.texture = None;
         self.last_image = None;
+        self.last_mode = None;
     }
 }
 
@@ -435,8 +437,6 @@ struct InteractiveParams {
     dry_run_mode: bool,
     explain: bool,
     device: Device,
-    output_path_override: String,
-    output_format_override: String,
 }
 
 impl Default for InteractiveParams {
@@ -466,8 +466,6 @@ impl Default for InteractiveParams {
             dry_run_mode: false,
             explain: false,
             device: Device::Cpu,
-            output_path_override: String::new(),
-            output_format_override: String::new(),
         }
     }
 }
@@ -476,7 +474,7 @@ impl InteractiveParams {
     fn to_builder(&self, source: &SourceImage, dry_run: bool) -> ParamsBuilder {
         ParamsBuilder {
             input_path: source.path.clone(),
-            output_path: self.resolve_output_path(&source.path),
+            output_path: default_output_path(&source.path),
             radius_dist: self.radius_dist,
             radius_mean: self.radius_mean,
             radius_stddev: self.radius_stddev,
@@ -493,14 +491,7 @@ impl InteractiveParams {
             dry_run,
             explain: self.explain,
             device: self.device,
-            output_format: {
-                let trimmed = self.output_format_override.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_owned())
-                }
-            },
+            output_format: None,
         }
     }
 
@@ -829,31 +820,7 @@ impl InteractiveParams {
             change.mark_changed();
         }
 
-        ui.separator();
-        ui.heading("Output");
-        if ui
-            .text_edit_singleline(&mut self.output_path_override)
-            .changed()
-        {
-            // Changing output path does not require a re-render.
-        }
-        if ui
-            .text_edit_singleline(&mut self.output_format_override)
-            .changed()
-        {
-            // Format change affects only export.
-        }
-
         change
-    }
-
-    fn resolve_output_path(&self, source_path: &Path) -> PathBuf {
-        let trimmed = self.output_path_override.trim();
-        if trimmed.is_empty() {
-            default_output_path(source_path)
-        } else {
-            PathBuf::from(trimmed)
-        }
     }
 
     fn current_cell_delta(&self) -> Option<f32> {
@@ -925,14 +892,6 @@ impl InteractiveParams {
         self.roi_y0 = self.roi_y0.min(max_height.saturating_sub(1));
         self.roi_x1 = self.roi_x1.clamp(self.roi_x0 + 1, max_width);
         self.roi_y1 = self.roi_y1.clamp(self.roi_y0 + 1, max_height);
-    }
-
-    fn update_output_defaults(&mut self, source_path: &Path) {
-        if self.output_path_override.trim().is_empty()
-            && let Some(path) = default_output_path(source_path).to_str()
-        {
-            self.output_path_override = path.to_owned();
-        }
     }
 }
 
@@ -1139,6 +1098,16 @@ const DISPLAY_Y_COEFF_R: f32 = 0.2126;
 const DISPLAY_Y_COEFF_G: f32 = 0.7152;
 const DISPLAY_Y_COEFF_B: f32 = 0.0722;
 
+fn save_preview_image(image: &RgbImage, mode: ColorMode, path: &Path) -> image::ImageResult<()> {
+    match mode {
+        ColorMode::Rgb => image.save(path),
+        ColorMode::Luma => {
+            let gray = luma_image(image);
+            gray.save(path)
+        }
+    }
+}
+
 fn color_image_for_display(image: &RgbImage, mode: ColorMode) -> egui::ColorImage {
     let width = image.width() as usize;
     let height = image.height() as usize;
@@ -1152,12 +1121,7 @@ fn color_image_for_display(image: &RgbImage, mode: ColorMode) -> egui::ColorImag
         }
         ColorMode::Luma => {
             for chunk in raw.chunks_exact(3) {
-                let y = (DISPLAY_Y_COEFF_R * chunk[0] as f32
-                    + DISPLAY_Y_COEFF_G * chunk[1] as f32
-                    + DISPLAY_Y_COEFF_B * chunk[2] as f32)
-                    .round()
-                    .clamp(0.0, 255.0) as u8;
-                pixels.push(egui::Color32::from_gray(y));
+                pixels.push(egui::Color32::from_gray(luma_from_rgb(chunk)));
             }
         }
     }
@@ -1165,6 +1129,23 @@ fn color_image_for_display(image: &RgbImage, mode: ColorMode) -> egui::ColorImag
         size: [width, height],
         pixels,
     }
+}
+
+fn luma_image(image: &RgbImage) -> GrayImage {
+    let (width, height) = image.dimensions();
+    let mut buffer = Vec::with_capacity((width * height) as usize);
+    for chunk in image.as_raw().chunks_exact(3) {
+        buffer.push(luma_from_rgb(chunk));
+    }
+    GrayImage::from_raw(width, height, buffer).expect("dimensions match buffer length")
+}
+
+fn luma_from_rgb(chunk: &[u8]) -> u8 {
+    (DISPLAY_Y_COEFF_R * chunk[0] as f32
+        + DISPLAY_Y_COEFF_G * chunk[1] as f32
+        + DISPLAY_Y_COEFF_B * chunk[2] as f32)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 struct WorkerState {
