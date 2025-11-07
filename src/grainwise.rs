@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rand::distributions::{Distribution, Uniform};
 use rand_distr::Poisson;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 use crate::model::{Derived, Plane};
@@ -25,88 +26,100 @@ pub fn render_grainwise(
     let zoom = params.zoom;
 
     let inv_samples = 1.0 / params.n_samples.max(1) as f32;
-    let render_result: Result<(), RenderError> =
-        (0..derived.input_height).into_par_iter().try_for_each(|y| {
+    let process_row = |y: usize| -> Result<(), RenderError> {
+        if cancel.is_some_and(|check| check()) {
+            return Err(RenderError::Cancelled);
+        }
+        for x in 0..derived.input_width {
             if cancel.is_some_and(|check| check()) {
                 return Err(RenderError::Cancelled);
             }
-            for x in 0..derived.input_width {
+            let lambda_val = lambda.get(x, y);
+            if lambda_val <= 0.0 {
+                continue;
+            }
+            let mut rng = rng::pixel_rng(params.seed, x as i32, y as i32);
+            let poisson = Poisson::new(lambda_val as f64).unwrap();
+            let q = poisson.sample(&mut rng) as u32;
+            if q == 0 {
+                continue;
+            }
+            let uniform = Uniform::new(0.0f32, 1.0);
+            for _ in 0..q {
                 if cancel.is_some_and(|check| check()) {
                     return Err(RenderError::Cancelled);
                 }
-                let lambda_val = lambda.get(x, y);
-                if lambda_val <= 0.0 {
+                let cx = x as f32 + uniform.sample(&mut rng);
+                let cy = y as f32 + uniform.sample(&mut rng);
+                let mut radius = derived.radius.sample(&mut rng);
+                if radius > derived.rm {
+                    radius = derived.rm;
+                }
+                if radius <= 0.0 {
                     continue;
                 }
-                let mut rng = rng::pixel_rng(params.seed, x as i32, y as i32);
-                let poisson = Poisson::new(lambda_val as f64).unwrap();
-                let q = poisson.sample(&mut rng) as u32;
-                if q == 0 {
+                let radius_out = radius * zoom;
+                if radius_out <= 0.0 {
                     continue;
                 }
-                let uniform = Uniform::new(0.0f32, 1.0);
-                for _ in 0..q {
+                let radius_sq = radius_out * radius_out;
+                for (k, offset) in offsets.iter().enumerate() {
                     if cancel.is_some_and(|check| check()) {
                         return Err(RenderError::Cancelled);
                     }
-                    let cx = x as f32 + uniform.sample(&mut rng);
-                    let cy = y as f32 + uniform.sample(&mut rng);
-                    let mut radius = derived.radius.sample(&mut rng);
-                    if radius > derived.rm {
-                        radius = derived.rm;
-                    }
-                    if radius <= 0.0 {
-                        continue;
-                    }
-                    let radius_out = radius * zoom;
-                    if radius_out <= 0.0 {
-                        continue;
-                    }
-                    let radius_sq = radius_out * radius_out;
-                    for (k, offset) in offsets.iter().enumerate() {
-                        if cancel.is_some_and(|check| check()) {
-                            return Err(RenderError::Cancelled);
-                        }
-                        let tx = (cx * zoom) + offset[0];
-                        let ty = (cy * zoom) + offset[1];
-                        if let Some((x_min, x_max)) =
-                            bounds(tx, radius_out, derived.output_width as i32)
-                            && let Some((y_min, y_max)) =
-                                bounds(ty, radius_out, derived.output_height as i32)
-                        {
-                            let lane_idx = k / 64;
-                            let bit_mask = 1u64 << (k % 64);
+                    let tx = (cx * zoom) + offset[0];
+                    let ty = (cy * zoom) + offset[1];
+                    if let Some((x_min, x_max)) =
+                        bounds(tx, radius_out, derived.output_width as i32)
+                        && let Some((y_min, y_max)) =
+                            bounds(ty, radius_out, derived.output_height as i32)
+                    {
+                        let lane_idx = k / 64;
+                        let bit_mask = 1u64 << (k % 64);
 
-                            for oy in y_min..=y_max {
+                        for oy in y_min..=y_max {
+                            if cancel.is_some_and(|check| check()) {
+                                return Err(RenderError::Cancelled);
+                            }
+                            let center_y = oy as f32 + 0.5;
+                            let dy = center_y - ty;
+                            let dy_sq = dy * dy;
+                            if dy_sq > radius_sq {
+                                continue;
+                            }
+                            for ox in x_min..=x_max {
                                 if cancel.is_some_and(|check| check()) {
                                     return Err(RenderError::Cancelled);
                                 }
-                                let center_y = oy as f32 + 0.5;
-                                let dy = center_y - ty;
-                                let dy_sq = dy * dy;
-                                if dy_sq > radius_sq {
-                                    continue;
-                                }
-                                for ox in x_min..=x_max {
-                                    if cancel.is_some_and(|check| check()) {
-                                        return Err(RenderError::Cancelled);
-                                    }
-                                    let center_x = ox as f32 + 0.5;
-                                    let dx = center_x - tx;
-                                    if dx * dx + dy_sq <= radius_sq {
-                                        let idx = oy as usize * derived.output_width + ox as usize;
-                                        let slot = idx * lanes + lane_idx;
-                                        bitsets[slot].fetch_or(bit_mask, Ordering::Relaxed);
-                                    }
+                                let center_x = ox as f32 + 0.5;
+                                let dx = center_x - tx;
+                                if dx * dx + dy_sq <= radius_sq {
+                                    let idx = oy as usize * derived.output_width + ox as usize;
+                                    let slot = idx * lanes + lane_idx;
+                                    bitsets[slot].fetch_or(bit_mask, Ordering::Relaxed);
                                 }
                             }
                         }
                     }
                 }
             }
-            Ok(())
-        });
-    render_result?;
+        }
+        Ok(())
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let render_result: Result<(), RenderError> =
+            (0..derived.input_height).into_par_iter().try_for_each(|y| process_row(y));
+        render_result?;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        for y in 0..derived.input_height {
+            process_row(y)?;
+        }
+    }
 
     if cancel.is_some_and(|check| check()) {
         return Err(RenderError::Cancelled);

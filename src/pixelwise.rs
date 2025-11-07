@@ -1,6 +1,8 @@
 use rand::distributions::{Distribution, Uniform};
 use rand_distr::Poisson;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::slice::ParallelSliceMut;
 
 use crate::model::{Derived, Plane};
@@ -21,25 +23,37 @@ pub fn render_pixelwise(
     let inv_zoom = 1.0 / params.zoom;
     let offsets_input = &derived.offsets_input;
 
-    let render_result: Result<(), RenderError> = pixels
-        .par_chunks_mut(out_w)
-        .enumerate()
-        .try_for_each(move |(y, row)| {
-            if cancel.is_some_and(|check| check()) {
-                return Err(RenderError::Cancelled);
+    let render_row = |y: usize, row: &mut [f32]| -> Result<(), RenderError> {
+        if cancel.is_some_and(|check| check()) {
+            return Err(RenderError::Cancelled);
+        }
+        for (x, value) in row.iter_mut().enumerate() {
+            let mut sum = 0.0f32;
+            for offset in offsets_input {
+                let xg = ((x as f32 + 0.5) * inv_zoom) - offset[0];
+                let yg = ((y as f32 + 0.5) * inv_zoom) - offset[1];
+                sum += evaluate_indicator(xg, yg, lambda, params, derived);
             }
-            for (x, value) in row.iter_mut().enumerate() {
-                let mut sum = 0.0f32;
-                for offset in offsets_input {
-                    let xg = ((x as f32 + 0.5) * inv_zoom) - offset[0];
-                    let yg = ((y as f32 + 0.5) * inv_zoom) - offset[1];
-                    sum += evaluate_indicator(xg, yg, lambda, params, derived);
-                }
-                *value = sum * inv_samples;
-            }
-            Ok(())
-        });
-    render_result?;
+            *value = sum * inv_samples;
+        }
+        Ok(())
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let render_result: Result<(), RenderError> = pixels
+            .par_chunks_mut(out_w)
+            .enumerate()
+            .try_for_each(|(y, row)| render_row(y, row));
+        render_result?;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        for (y, row) in pixels.chunks_mut(out_w).enumerate() {
+            render_row(y, row)?;
+        }
+    }
 
     Ok(Plane::from_vec(out_w, out_h, pixels))
 }
