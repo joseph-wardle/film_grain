@@ -3,15 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use film_grain::{ColorMode, InputImage, RenderError, Roi};
-#[cfg(target_arch = "wasm32")]
-use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
 use image::RgbImage;
+#[cfg(target_arch = "wasm32")]
+use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
 
 use super::luma_image;
 
-pub const OPEN_FILE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "tif", "tiff", "bmp", "hdr", "gif",
-];
+pub const OPEN_FILE_EXTENSIONS: &[&str] =
+    &["png", "jpg", "jpeg", "tif", "tiff", "bmp", "hdr", "gif"];
 pub const SAVE_FILE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "tif", "tiff", "bmp"];
 
 #[derive(Clone, Copy, Debug)]
@@ -27,7 +26,6 @@ impl LoadDialogOptions {
             roi: None,
         }
     }
-
 }
 
 #[derive(Clone)]
@@ -65,9 +63,14 @@ impl LoadedImage {
 
 #[derive(Clone)]
 pub enum SourceOrigin {
-    FilePath { path: PathBuf },
+    FilePath {
+        path: PathBuf,
+    },
     #[cfg(target_arch = "wasm32")]
-    BrowserFile { file_name: String, bytes: Arc<Vec<u8>> },
+    BrowserFile {
+        file_name: String,
+        bytes: Arc<Vec<u8>>,
+    },
 }
 
 impl SourceOrigin {
@@ -110,7 +113,9 @@ impl SourceOrigin {
         match self {
             SourceOrigin::FilePath { path } => InputImage::from_path(path, color_mode, roi),
             #[cfg(target_arch = "wasm32")]
-            SourceOrigin::BrowserFile { bytes, .. } => InputImage::from_bytes(bytes, color_mode, roi),
+            SourceOrigin::BrowserFile { bytes, .. } => {
+                InputImage::from_bytes(bytes, color_mode, roi)
+            }
         }
     }
 }
@@ -118,7 +123,9 @@ impl SourceOrigin {
 pub enum SaveOutcome {
     File(PathBuf),
     #[cfg(target_arch = "wasm32")]
-    Downloaded { file_name: String },
+    Downloaded {
+        file_name: String,
+    },
 }
 
 pub enum PlatformEvent {
@@ -187,8 +194,8 @@ mod native {
             return Ok(None);
         };
         let roi = options.roi.as_ref();
-        let cache = InputImage::from_path(&path, options.color_mode, roi)
-            .map_err(|err| err.to_string())?;
+        let cache =
+            InputImage::from_path(&path, options.color_mode, roi).map_err(|err| err.to_string())?;
         let origin = SourceOrigin::file_path(path);
         Ok(Some(LoadedImage::new(origin, Arc::new(cache))))
     }
@@ -212,7 +219,7 @@ mod web {
     use rfd::AsyncFileDialog;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::spawn_local;
-    use web_sys::{window, Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url, window};
 
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -238,7 +245,9 @@ mod web {
             let queue = self.events.clone();
             spawn_local(async move {
                 let event = load_image_async(options).await;
-                queue.borrow_mut().push_back(PlatformEvent::ImageLoaded(event));
+                queue
+                    .borrow_mut()
+                    .push_back(PlatformEvent::ImageLoaded(event));
             });
         }
 
@@ -317,10 +326,13 @@ mod web {
         let array = Uint8Array::from(bytes.as_slice());
         let mut options = BlobPropertyBag::new();
         options.set_type("image/png");
-        let blob = Blob::new_with_u8_array_sequence_and_options(&js_sys::Array::of1(&array.into()), &options)
-            .map_err(|err| format!("blob error: {err:?}"))?;
-        let url = Url::create_object_url_with_blob(&blob)
-            .map_err(|err| format!("url error: {err:?}"))?;
+        let blob = Blob::new_with_u8_array_sequence_and_options(
+            &js_sys::Array::of1(&array.into()),
+            &options,
+        )
+        .map_err(|err| format!("blob error: {err:?}"))?;
+        let url =
+            Url::create_object_url_with_blob(&blob).map_err(|err| format!("url error: {err:?}"))?;
         let element = document
             .create_element("a")
             .map_err(|err| format!("anchor error: {err:?}"))?;

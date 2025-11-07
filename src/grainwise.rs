@@ -25,14 +25,13 @@ pub fn render_grainwise(
     let zoom = params.zoom;
 
     let inv_samples = 1.0 / params.n_samples.max(1) as f32;
-    let cancel = cancel;
     let render_result: Result<(), RenderError> =
         (0..derived.input_height).into_par_iter().try_for_each(|y| {
-            if cancel.map_or(false, |check| check()) {
+            if cancel.is_some_and(|check| check()) {
                 return Err(RenderError::Cancelled);
             }
             for x in 0..derived.input_width {
-                if cancel.map_or(false, |check| check()) {
+                if cancel.is_some_and(|check| check()) {
                     return Err(RenderError::Cancelled);
                 }
                 let lambda_val = lambda.get(x, y);
@@ -47,7 +46,7 @@ pub fn render_grainwise(
                 }
                 let uniform = Uniform::new(0.0f32, 1.0);
                 for _ in 0..q {
-                    if cancel.map_or(false, |check| check()) {
+                    if cancel.is_some_and(|check| check()) {
                         return Err(RenderError::Cancelled);
                     }
                     let cx = x as f32 + uniform.sample(&mut rng);
@@ -65,7 +64,7 @@ pub fn render_grainwise(
                     }
                     let radius_sq = radius_out * radius_out;
                     for (k, offset) in offsets.iter().enumerate() {
-                        if cancel.map_or(false, |check| check()) {
+                        if cancel.is_some_and(|check| check()) {
                             return Err(RenderError::Cancelled);
                         }
                         let tx = (cx * zoom) + offset[0];
@@ -79,7 +78,7 @@ pub fn render_grainwise(
                             let bit_mask = 1u64 << (k % 64);
 
                             for oy in y_min..=y_max {
-                                if cancel.map_or(false, |check| check()) {
+                                if cancel.is_some_and(|check| check()) {
                                     return Err(RenderError::Cancelled);
                                 }
                                 let center_y = oy as f32 + 0.5;
@@ -89,7 +88,7 @@ pub fn render_grainwise(
                                     continue;
                                 }
                                 for ox in x_min..=x_max {
-                                    if cancel.map_or(false, |check| check()) {
+                                    if cancel.is_some_and(|check| check()) {
                                         return Err(RenderError::Cancelled);
                                     }
                                     let center_x = ox as f32 + 0.5;
@@ -109,7 +108,7 @@ pub fn render_grainwise(
         });
     render_result?;
 
-    if cancel.map_or(false, |check| check()) {
+    if cancel.is_some_and(|check| check()) {
         return Err(RenderError::Cancelled);
     }
     let mut data = vec![0.0f32; total];

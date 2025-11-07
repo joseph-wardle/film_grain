@@ -1,10 +1,13 @@
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
-use std::thread;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use eframe::{egui, wgpu};
+use futures::channel::oneshot;
+use futures::task::noop_waker_ref;
 
 use film_grain::{
     Algo, ColorMode, Device, InputImage, MaxRadius, Params, ParamsBuilder, RadiusDist, RenderError,
@@ -13,25 +16,22 @@ use film_grain::{
 };
 use image::{GrayImage, RgbImage};
 use rand::Rng;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
 
 #[path = "viewer/platform.rs"]
 mod platform;
 
 use platform::{
-    create_platform_io,
-    ActivePlatformIo,
-    LoadDialogOptions,
-    LoadedImage,
-    PlatformEvent,
-    PlatformIo,
-    PreviewSaveRequest,
-    SaveOutcome,
-    SourceOrigin,
+    ActivePlatformIo, LoadDialogOptions, LoadedImage, PlatformEvent, PlatformIo,
+    PreviewSaveRequest, SaveOutcome, SourceOrigin, create_platform_io,
 };
 
 fn main() -> eframe::Result<()> {
-    let mut options = eframe::NativeOptions::default();
-    options.renderer = eframe::Renderer::Wgpu;
+    let mut options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
     // Keep eframe on the modern GPU path (Vulkan/Metal/DX12) to avoid the legacy GL stack.
     options.wgpu_options.supported_backends = wgpu::Backends::PRIMARY;
     options.wgpu_options.power_preference = wgpu::PowerPreference::HighPerformance;
@@ -1016,8 +1016,7 @@ impl ParamChange {
 }
 
 struct RenderWorker {
-    job_tx: mpsc::Sender<RenderJob>,
-    result_rx: mpsc::Receiver<RenderOutcome>,
+    jobs: Vec<JobHandle>,
     latest_request: Arc<AtomicU64>,
     next_job_id: u64,
     gpu_available: bool,
@@ -1040,71 +1039,10 @@ impl CancelToken {
 
 impl RenderWorker {
     fn new() -> Self {
-        let (job_tx, job_rx) = mpsc::channel::<RenderJob>();
-        let (result_tx, result_rx) = mpsc::channel::<RenderOutcome>();
-        let latest_request = Arc::new(AtomicU64::new(0));
-        let worker_latest = latest_request.clone();
         let gpu_available = film_grain::wgpu::context().is_ok();
-
-        thread::Builder::new()
-            .name("film-grain-render".into())
-            .spawn(move || {
-                while let Ok(job) = job_rx.recv() {
-                    let current = worker_latest.load(Ordering::SeqCst);
-                    if job.id != current {
-                        continue;
-                    }
-                    let token = CancelToken::new(job.id, worker_latest.clone());
-                    let cancel = || token.is_cancelled();
-                    let outcome = match job.kind {
-                        RenderTaskKind::Preview => {
-                            let color_mode = job.params.color_mode;
-                            render_with_input_image_cancelable(
-                                job.input.as_ref(),
-                                &job.params,
-                                &cancel,
-                            )
-                            .map(|(image, stats)| JobResult::Preview {
-                                image,
-                                stats,
-                                color_mode,
-                            })
-                        }
-                        RenderTaskKind::StatsOnly => dry_run_with_input_image_cancelable(
-                            job.input.as_ref(),
-                            &job.params,
-                            &cancel,
-                        )
-                        .map(|stats| JobResult::Stats { stats }),
-                    };
-                    if token.is_cancelled() {
-                        continue;
-                    }
-                    match outcome {
-                        Err(RenderError::Cancelled) => continue,
-                        outcome => {
-                            if worker_latest.load(Ordering::SeqCst) != job.id {
-                                continue;
-                            }
-                            if result_tx
-                                .send(RenderOutcome {
-                                    id: job.id,
-                                    outcome,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-            })
-            .expect("spawn render worker");
-
         Self {
-            job_tx,
-            result_rx,
-            latest_request,
+            jobs: Vec::new(),
+            latest_request: Arc::new(AtomicU64::new(0)),
             next_job_id: 1,
             gpu_available,
         }
@@ -1127,12 +1065,28 @@ impl RenderWorker {
             params,
             kind,
         };
-        self.job_tx.send(job).map_err(|err| err.to_string())?;
+        let handle = JobHandle::spawn(job, self.latest_request.clone())?;
+        self.jobs.push(handle);
         Ok(id)
     }
 
-    fn try_recv(&self) -> Option<RenderOutcome> {
-        self.result_rx.try_recv().ok()
+    fn try_recv(&mut self) -> Option<RenderOutcome> {
+        let mut idx = 0;
+        while idx < self.jobs.len() {
+            match self.jobs[idx].poll() {
+                JobPoll::Pending => {
+                    idx += 1;
+                }
+                JobPoll::Dropped => {
+                    self.jobs.swap_remove(idx);
+                }
+                JobPoll::Completed(outcome) => {
+                    self.jobs.swap_remove(idx);
+                    return Some(outcome);
+                }
+            }
+        }
+        None
     }
 
     fn gpu_available(&self) -> bool {
@@ -1150,6 +1104,90 @@ struct RenderJob {
 struct RenderOutcome {
     id: u64,
     outcome: Result<JobResult, RenderError>,
+}
+
+struct JobHandle {
+    id: u64,
+    receiver: oneshot::Receiver<Result<JobResult, RenderError>>,
+}
+
+enum JobPoll {
+    Pending,
+    Completed(RenderOutcome),
+    Dropped,
+}
+
+impl JobHandle {
+    fn spawn(job: RenderJob, latest: Arc<AtomicU64>) -> Result<Self, String> {
+        let id = job.id;
+        let (tx, rx) = oneshot::channel();
+        spawn_job(move || {
+            if latest.load(Ordering::SeqCst) != id {
+                return;
+            }
+            let token = CancelToken::new(id, latest.clone());
+            let cancel = || token.is_cancelled();
+            let outcome = match job.kind {
+                RenderTaskKind::Preview => {
+                    let color_mode = job.params.color_mode;
+                    render_with_input_image_cancelable(job.input.as_ref(), &job.params, &cancel)
+                        .map(|(image, stats)| JobResult::Preview {
+                            image,
+                            stats,
+                            color_mode,
+                        })
+                }
+                RenderTaskKind::StatsOnly => {
+                    dry_run_with_input_image_cancelable(job.input.as_ref(), &job.params, &cancel)
+                        .map(|stats| JobResult::Stats { stats })
+                }
+            };
+            if token.is_cancelled() {
+                return;
+            }
+            if latest.load(Ordering::SeqCst) != id {
+                return;
+            }
+            let _ = tx.send(outcome);
+        })?;
+        Ok(Self { id, receiver: rx })
+    }
+
+    fn poll(&mut self) -> JobPoll {
+        let waker = noop_waker_ref();
+        let mut ctx = Context::from_waker(waker);
+        match Pin::new(&mut self.receiver).poll(&mut ctx) {
+            Poll::Ready(Ok(outcome)) => JobPoll::Completed(RenderOutcome {
+                id: self.id,
+                outcome,
+            }),
+            Poll::Ready(Err(_)) => JobPoll::Dropped,
+            Poll::Pending => JobPoll::Pending,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_job<F>(task: F) -> Result<(), String>
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("film-grain-job".into())
+        .spawn(task)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_job<F>(task: F) -> Result<(), String>
+where
+    F: FnOnce() + 'static,
+{
+    spawn_local(async move {
+        task();
+    });
+    Ok(())
 }
 
 enum JobResult {

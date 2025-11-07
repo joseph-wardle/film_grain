@@ -14,6 +14,7 @@ thiserror = "1.0"
 wgpu = { version = "0.20", features = ["wgsl"] }
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.3"
+futures = "0.3"
 eframe = { version = "0.28", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts"] }
 egui_extras = { version = "0.28", default-features = false, features = ["image"] }
 rfd = "0.14"
