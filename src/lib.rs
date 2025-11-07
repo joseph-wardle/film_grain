@@ -153,12 +153,12 @@ fn render_from_workspace_impl(
             (Device::Cpu, Algo::Grain) => render_grainwise(&lambda, params, &derived, cancel),
             (Device::Gpu, Algo::Pixel) => {
                 check_cancel(cancel)?;
-                let ctx = gpu_ctx.expect("gpu context initialized");
+                let ctx = gpu_ctx.as_ref().expect("gpu context initialized").as_ref();
                 wgpu::render_pixelwise_gpu(ctx, &lambda, params, &derived)
             }
             (Device::Gpu, Algo::Grain) => {
                 check_cancel(cancel)?;
-                let ctx = gpu_ctx.expect("gpu context initialized");
+                let ctx = gpu_ctx.as_ref().expect("gpu context initialized").as_ref();
                 wgpu::render_grainwise_gpu(ctx, &lambda, params, &derived)
             }
             (_, Algo::Auto) => unreachable!("auto selection resolved before rendering"),

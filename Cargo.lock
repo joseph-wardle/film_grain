@@ -1157,6 +1157,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "image",
+ "log",
  "pollster",
  "rand",
  "rand_distr",

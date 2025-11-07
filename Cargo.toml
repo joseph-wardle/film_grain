@@ -17,3 +17,4 @@ pollster = "0.3"
 eframe = { version = "0.28", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts"] }
 egui_extras = { version = "0.28", default-features = false, features = ["image"] }
 rfd = "0.14"
+log = "0.4"
