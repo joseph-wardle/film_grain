@@ -151,13 +151,17 @@ impl ViewerState {
                 ui.set_min_width(ui.available_width());
                 ui.centered_and_justified(|ui| {
                     if let Some(texture) = self.preview.texture.as_ref() {
-                        let size = texture.size_vec2();
-                        ui.image((texture.id(), size));
-                        ui.label(format!(
-                            "{} × {} px",
-                            size.x.round() as u32,
-                            size.y.round() as u32
-                        ));
+                        let tex_size = texture.size_vec2();
+                        let fitted = fit_size_into_bounds(tex_size, ui.available_size());
+                        ui.vertical_centered(|ui| {
+                            ui.image((texture.id(), fitted));
+                            ui.add_space(4.0);
+                            ui.label(format!(
+                                "{} × {} px",
+                                tex_size.x.round() as u32,
+                                tex_size.y.round() as u32
+                            ));
+                        });
                     } else {
                         ui.label("No preview yet – load an image to begin.");
                     }
@@ -1146,6 +1150,21 @@ fn luma_from_rgb(chunk: &[u8]) -> u8 {
         + DISPLAY_Y_COEFF_B * chunk[2] as f32)
         .round()
         .clamp(0.0, 255.0) as u8
+}
+
+fn fit_size_into_bounds(image_size: egui::Vec2, bounds: egui::Vec2) -> egui::Vec2 {
+    if image_size.x <= 0.0 || image_size.y <= 0.0 {
+        return image_size;
+    }
+    let bounds = egui::Vec2::new(bounds.x.max(1.0), bounds.y.max(1.0));
+    let scale = (bounds.x / image_size.x)
+        .min(bounds.y / image_size.y)
+        .min(1.0);
+    if scale.is_finite() {
+        image_size * scale
+    } else {
+        image_size
+    }
 }
 
 struct WorkerState {
