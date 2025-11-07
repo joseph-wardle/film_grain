@@ -9,6 +9,8 @@ use eframe::{egui, wgpu};
 use futures::channel::oneshot;
 use futures::task::noop_waker_ref;
 
+#[cfg(target_arch = "wasm32")]
+use film_grain::wgpu::WEBGPU_MAX_OUTPUT_PIXELS;
 use film_grain::{
     Algo, ColorMode, Device, InputImage, MaxRadius, Params, ParamsBuilder, RadiusDist, RenderError,
     RenderStats, Roi, default_cell_delta, dry_run_with_input_image_cancelable,
@@ -157,6 +159,13 @@ impl ViewerState {
                 ui.label(self.top_bar_text());
                 ui.separator();
                 ui.label(self.worker_status.status_text());
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let limit_mp = WEBGPU_MAX_OUTPUT_PIXELS as f32 / 1_000_000.0;
+                    ui.small(format!("WebGPU limit ~{limit_mp:.1} MP")).on_hover_text(
+                        "Browsers cap storage buffers around 128 MiB; very large previews won't fit.",
+                    );
+                }
             });
             if let Some(err) = &self.last_error {
                 ui.colored_label(egui::Color32::LIGHT_RED, format!("Error: {err}"));
@@ -809,6 +818,16 @@ impl InteractiveParams {
 
         ui.separator();
         ui.heading("Output size");
+        #[cfg(target_arch = "wasm32")]
+        {
+            let limit_mp = WEBGPU_MAX_OUTPUT_PIXELS as f32 / 1_000_000.0;
+            ui.label(
+                egui::RichText::new(format!(
+                    "Web builds clamp preview sizes to ≈{limit_mp:.1} MP to stay within browser limits"
+                ))
+                .small(),
+            );
+        }
         if ui
             .checkbox(&mut self.size_enabled, "Override output size")
             .changed()
@@ -819,7 +838,7 @@ impl InteractiveParams {
             if ui
                 .add(
                     egui::DragValue::new(&mut self.size_width)
-                        .range(1..=16384)
+                        .range(1..=Self::max_output_dimension())
                         .prefix("Width "),
                 )
                 .changed()
@@ -836,7 +855,7 @@ impl InteractiveParams {
                 && ui
                     .add(
                         egui::DragValue::new(&mut self.size_height)
-                            .range(1..=16384)
+                            .range(1..=Self::max_output_dimension())
                             .prefix("Height "),
                     )
                     .changed()
@@ -898,6 +917,10 @@ impl InteractiveParams {
             seed_changed = true;
         }
         if seed_changed {
+            change.mark_changed();
+        }
+
+        if self.enforce_platform_limits(source) {
             change.mark_changed();
         }
 
@@ -974,6 +997,88 @@ impl InteractiveParams {
         self.roi_x1 = self.roi_x1.clamp(self.roi_x0 + 1, max_width);
         self.roi_y1 = self.roi_y1.clamp(self.roi_y0 + 1, max_height);
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn predicted_output_dims(&self, source: &SourceImage) -> (u32, u32) {
+        if self.size_enabled {
+            let width = self.size_width.max(1);
+            let height = if self.size_height_enabled {
+                self.size_height.max(1)
+            } else {
+                derive_height_from_source(width, source)
+            };
+            (width, height)
+        } else {
+            let width = ((source.width.max(1) as f32) * self.zoom).ceil().max(1.0) as u32;
+            let height = ((source.height.max(1) as f32) * self.zoom).ceil().max(1.0) as u32;
+            (width, height)
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn enforce_platform_limits(&mut self, source: Option<&SourceImage>) -> bool {
+        let Some(source) = source else {
+            return false;
+        };
+        let (width, height) = self.predicted_output_dims(source);
+        let pixels = (width as u64) * (height as u64);
+        let budget = WEBGPU_MAX_OUTPUT_PIXELS as u64;
+        if pixels <= budget {
+            return false;
+        }
+        let scale = (budget as f64 / pixels as f64).sqrt().clamp(0.0, 1.0);
+        if !scale.is_finite() || scale <= 0.0 {
+            return false;
+        }
+        let mut changed = false;
+        if self.size_enabled {
+            let new_width = ((width as f64) * scale).floor().max(1.0) as u32;
+            if new_width != self.size_width {
+                self.size_width = new_width;
+                changed = true;
+            }
+            if self.size_height_enabled {
+                let new_height = ((height as f64) * scale).floor().max(1.0) as u32;
+                if new_height != self.size_height {
+                    self.size_height = new_height;
+                    changed = true;
+                }
+            }
+        } else {
+            let min_zoom = 0.25_f64;
+            let new_zoom = (self.zoom as f64 * scale).max(min_zoom) as f32;
+            if (new_zoom - self.zoom).abs() > f32::EPSILON {
+                self.zoom = new_zoom;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn enforce_platform_limits(&mut self, _source: Option<&SourceImage>) -> bool {
+        false
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn max_output_dimension() -> u32 {
+        (WEBGPU_MAX_OUTPUT_PIXELS as f64).sqrt().floor().max(1.0) as u32
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn max_output_dimension() -> u32 {
+        16384
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn derive_height_from_source(width: u32, source: &SourceImage) -> u32 {
+    let src_width = source.width.max(1) as f32;
+    let src_height = source.height.max(1) as f32;
+    if src_width <= 0.0 {
+        return width.max(1);
+    }
+    ((width as f32) * (src_height / src_width)).round().max(1.0) as u32
 }
 
 #[derive(Default)]

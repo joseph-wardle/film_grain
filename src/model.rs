@@ -6,6 +6,8 @@ use statrs::distribution::{ContinuousCDF, Normal};
 
 use crate::params::{MaxRadius, Params, RadiusDist, default_cell_delta};
 use crate::rng;
+#[cfg(target_arch = "wasm32")]
+use crate::wgpu::WEBGPU_MAX_OUTPUT_PIXELS;
 
 const EPSILON: f32 = 1e-6;
 const MAX_LAMBDA: f32 = 1.0e6;
@@ -289,10 +291,28 @@ fn resolve_output_size(
         if height == 0 {
             return Err("output height must be > 0".into());
         }
+        #[cfg(target_arch = "wasm32")]
+        validate_webgpu_output_dims(width, height)?;
         return Ok((width, height));
     }
 
     let width = ((input_size.0 as f32) * params.zoom).ceil().max(1.0) as usize;
     let height = ((input_size.1 as f32) * params.zoom).ceil().max(1.0) as usize;
+    #[cfg(target_arch = "wasm32")]
+    validate_webgpu_output_dims(width, height)?;
     Ok((width, height))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn validate_webgpu_output_dims(width: usize, height: usize) -> Result<(), String> {
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "output size is too large".to_string())?;
+    if pixels > WEBGPU_MAX_OUTPUT_PIXELS {
+        let limit_mp = WEBGPU_MAX_OUTPUT_PIXELS as f32 / 1_000_000.0;
+        return Err(format!(
+            "output size {width}×{height} exceeds the WebGPU browser budget (~{limit_mp:.1} MP)"
+        ));
+    }
+    Ok(())
 }

@@ -1,10 +1,22 @@
+#[cfg(target_arch = "wasm32")]
+use std::mem;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::Poll;
 
 use bytemuck::{Pod, Zeroable};
-use futures::{channel::oneshot, executor::block_on, future::poll_fn, FutureExt};
+use futures::{FutureExt, channel::oneshot, executor::block_on, future::poll_fn};
 use log::{error, warn};
 use wgpu::util::DeviceExt;
+
+#[cfg(target_arch = "wasm32")]
+pub const WEBGPU_MAX_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(target_arch = "wasm32")]
+pub const WEBGPU_MAX_STORAGE_BUFFER_BINDING_BYTES: u64 = 128 * 1024 * 1024;
+#[cfg(target_arch = "wasm32")]
+pub const WEBGPU_MAX_UNIFORM_BUFFER_BINDING_BYTES: u64 = 64 * 1024;
+#[cfg(target_arch = "wasm32")]
+pub const WEBGPU_MAX_OUTPUT_PIXELS: usize =
+    (WEBGPU_MAX_STORAGE_BUFFER_BINDING_BYTES / mem::size_of::<f32>() as u64) as usize;
 
 use crate::RenderError;
 use crate::model::{Derived, Plane};
@@ -137,6 +149,26 @@ fn preferred_backends() -> wgpu::Backends {
     }
 }
 
+fn negotiated_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let adapter_limits = adapter.limits();
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter_limits);
+        limits.max_buffer_size = limits.max_buffer_size.min(WEBGPU_MAX_BUFFER_BYTES);
+        limits.max_storage_buffer_binding_size = limits
+            .max_storage_buffer_binding_size
+            .min(WEBGPU_MAX_STORAGE_BUFFER_BINDING_BYTES);
+        limits.max_uniform_buffer_binding_size = limits
+            .max_uniform_buffer_binding_size
+            .min(WEBGPU_MAX_UNIFORM_BUFFER_BINDING_BYTES);
+        limits
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        adapter_limits
+    }
+}
+
 fn init_blocking() -> Result<GpuContext, RenderError> {
     block_on(init_async())
 }
@@ -153,7 +185,7 @@ async fn init_async() -> Result<GpuContext, RenderError> {
         .await
         .ok_or_else(|| RenderError::Gpu("no compatible GPU adapter found".into()))?;
 
-    let adapter_limits = adapter.limits();
+    let adapter_limits = negotiated_limits(&adapter);
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
@@ -419,6 +451,12 @@ fn render_pixelwise_gpu_inner(
     let out_len = d.output_width * d.output_height;
     let out_bytes = out_len * std::mem::size_of::<f32>();
 
+    let limits = ctx.device.limits();
+    ensure_storage_buffer_size(&limits, lambda_bytes.len(), "Pixel lambda buffer")?;
+    ensure_storage_buffer_size(&limits, offsets_bytes.len(), "Pixel offsets buffer")?;
+    ensure_uniform_buffer_size(&limits, uniforms_bytes.len(), "Pixel uniforms")?;
+    ensure_storage_buffer_size(&limits, out_bytes, "Pixel output buffer")?;
+
     let lambda_buffer = ctx
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -550,6 +588,13 @@ fn render_grainwise_gpu_inner(
     let bitset_words = out_len * lanes as usize;
     let bitset_bytes = bitset_words * std::mem::size_of::<u32>();
     let out_bytes = out_len * std::mem::size_of::<f32>();
+
+    let limits = ctx.device.limits();
+    ensure_storage_buffer_size(&limits, lambda_bytes.len(), "Grain lambda buffer")?;
+    ensure_storage_buffer_size(&limits, offsets_bytes.len(), "Grain offsets buffer")?;
+    ensure_uniform_buffer_size(&limits, uniforms_bytes.len(), "Grain uniforms")?;
+    ensure_storage_buffer_size(&limits, bitset_bytes, "Grain accumulator buffer")?;
+    ensure_storage_buffer_size(&limits, out_bytes, "Grain output buffer")?;
 
     let lambda_buffer = ctx
         .device
@@ -736,6 +781,55 @@ fn lanes_for_samples(samples: u32) -> u32 {
     samples.div_ceil(32)
 }
 
+fn ensure_storage_buffer_size(
+    limits: &wgpu::Limits,
+    bytes: usize,
+    label: &str,
+) -> Result<(), RenderError> {
+    let requirement = bytes as u64;
+    if requirement > limits.max_buffer_size {
+        return Err(RenderError::Gpu(format!(
+            "{label} requires {} but the adapter only supports buffers up to {}.",
+            format_bytes(requirement),
+            format_bytes(limits.max_buffer_size)
+        )));
+    }
+    if requirement > limits.max_storage_buffer_binding_size as u64 {
+        return Err(RenderError::Gpu(format!(
+            "{label} exceeds the storage binding limit of {}.",
+            format_bytes(limits.max_storage_buffer_binding_size as u64)
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_uniform_buffer_size(
+    limits: &wgpu::Limits,
+    bytes: usize,
+    label: &str,
+) -> Result<(), RenderError> {
+    let requirement = bytes as u64;
+    if requirement > limits.max_uniform_buffer_binding_size as u64 {
+        return Err(RenderError::Gpu(format!(
+            "{label} exceeds the uniform buffer limit of {}.",
+            format_bytes(limits.max_uniform_buffer_binding_size as u64)
+        )));
+    }
+    Ok(())
+}
+
+fn format_bytes(value: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    if value as f64 >= MIB {
+        format!("{:.1} MiB", value as f64 / MIB)
+    } else if value as f64 >= KIB {
+        format!("{:.1} KiB", value as f64 / KIB)
+    } else {
+        format!("{value} B")
+    }
+}
+
 fn run_with_gpu_error_scope<T, F>(
     ctx: &GpuContext,
     label: &'static str,
@@ -807,19 +901,17 @@ async fn wait_for_buffer_map(
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
-    poll_fn(|cx| {
-        match receiver.poll_unpin(cx) {
-            Poll::Ready(Ok(Ok(()))) => Poll::Ready(Ok(())),
-            Poll::Ready(Ok(Err(err))) => {
-                Poll::Ready(Err(RenderError::Gpu(format!("{label} map_async failed: {err}"))))
-            }
-            Poll::Ready(Err(_)) => {
-                Poll::Ready(Err(RenderError::Gpu(format!("{label} map_async cancelled"))))
-            }
-            Poll::Pending => {
-                device.poll(wgpu::Maintain::Poll);
-                Poll::Pending
-            }
+    poll_fn(|cx| match receiver.poll_unpin(cx) {
+        Poll::Ready(Ok(Ok(()))) => Poll::Ready(Ok(())),
+        Poll::Ready(Ok(Err(err))) => Poll::Ready(Err(RenderError::Gpu(format!(
+            "{label} map_async failed: {err}"
+        )))),
+        Poll::Ready(Err(_)) => Poll::Ready(Err(RenderError::Gpu(format!(
+            "{label} map_async cancelled"
+        )))),
+        Poll::Pending => {
+            device.poll(wgpu::Maintain::Poll);
+            Poll::Pending
         }
     })
     .await
