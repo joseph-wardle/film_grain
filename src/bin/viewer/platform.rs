@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use film_grain::{ColorMode, InputImage, RenderError, Roi};
@@ -324,7 +326,7 @@ mod web {
             .ok_or_else(|| "missing document".to_owned())?;
         let body = document.body().ok_or_else(|| "missing body".to_owned())?;
         let array = Uint8Array::from(bytes.as_slice());
-        let mut options = BlobPropertyBag::new();
+        let options = BlobPropertyBag::new();
         options.set_type("image/png");
         let blob = Blob::new_with_u8_array_sequence_and_options(
             &js_sys::Array::of1(&array.into()),

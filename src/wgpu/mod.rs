@@ -157,10 +157,10 @@ fn negotiated_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
         limits.max_buffer_size = limits.max_buffer_size.min(WEBGPU_MAX_BUFFER_BYTES);
         limits.max_storage_buffer_binding_size = limits
             .max_storage_buffer_binding_size
-            .min(WEBGPU_MAX_STORAGE_BUFFER_BINDING_BYTES);
+            .min(WEBGPU_MAX_STORAGE_BUFFER_BINDING_BYTES as u32);
         limits.max_uniform_buffer_binding_size = limits
             .max_uniform_buffer_binding_size
-            .min(WEBGPU_MAX_UNIFORM_BUFFER_BINDING_BYTES);
+            .min(WEBGPU_MAX_UNIFORM_BUFFER_BINDING_BYTES as u32);
         limits
     }
     #[cfg(not(target_arch = "wasm32"))]

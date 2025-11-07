@@ -29,6 +29,7 @@ use platform::{
     PreviewSaveRequest, SaveOutcome, SourceOrigin, create_platform_io,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -47,6 +48,11 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(FilmGrainViewer::new(cc)))),
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    panic!("web bootstrap coming soon; native build only for now");
 }
 
 struct FilmGrainViewer {
