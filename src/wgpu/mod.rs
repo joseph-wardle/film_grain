@@ -67,11 +67,14 @@ fn init() -> Result<GpuContext, RenderError> {
     }))
     .ok_or_else(|| RenderError::Gpu("no compatible GPU adapter found".into()))?;
 
+    let adapter_limits = adapter.limits();
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("filmgrain-device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            // Request the full limits the adapter reports so large outputs aren't capped by the
+            // conservative WebGPU defaults (e.g. 256 MiB max buffer size).
+            required_limits: adapter_limits,
         },
         None,
     ))
