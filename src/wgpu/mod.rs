@@ -1,6 +1,7 @@
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bytemuck::{Pod, Zeroable};
+use log::{error, warn};
 use pollster::block_on;
 use wgpu::util::DeviceExt;
 
@@ -11,7 +12,7 @@ use crate::params::{Params, RadiusDist};
 const PIXEL_SHADER: &str = include_str!("shaders/pixel_wise.wgsl");
 const GRAIN_SHADER: &str = include_str!("shaders/grain_wise.wgsl");
 
-static GPU_CONTEXT: OnceLock<GpuContext> = OnceLock::new();
+static GPU_CONTEXT: OnceLock<GpuContextCache> = OnceLock::new();
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -47,15 +48,47 @@ pub struct GpuContext {
     grain_reduce_pipeline: wgpu::ComputePipeline,
 }
 
-pub fn context() -> Result<&'static GpuContext, RenderError> {
-    if let Some(ctx) = GPU_CONTEXT.get() {
-        return Ok(ctx);
+struct GpuContextCache {
+    ctx: Mutex<Option<Arc<GpuContext>>>,
+}
+
+impl Default for GpuContextCache {
+    fn default() -> Self {
+        Self {
+            ctx: Mutex::new(None),
+        }
     }
-    let ctx = init()?;
-    GPU_CONTEXT
-        .set(ctx)
-        .map_err(|_| RenderError::Gpu("GPU context already initialized".into()))?;
-    Ok(GPU_CONTEXT.get().expect("gpu context set"))
+}
+
+impl GpuContextCache {
+    fn get(&self) -> Result<Arc<GpuContext>, RenderError> {
+        let mut guard = self.ctx.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(ctx) = guard.as_ref() {
+            return Ok(ctx.clone());
+        }
+        let ctx = Arc::new(init()?);
+        *guard = Some(ctx.clone());
+        Ok(ctx)
+    }
+
+    fn invalidate(&self) {
+        let mut guard = self.ctx.lock().unwrap_or_else(|err| err.into_inner());
+        guard.take();
+    }
+}
+
+fn cache() -> &'static GpuContextCache {
+    GPU_CONTEXT.get_or_init(GpuContextCache::default)
+}
+
+pub fn context() -> Result<Arc<GpuContext>, RenderError> {
+    cache().get()
+}
+
+fn invalidate_context() {
+    if let Some(cache) = GPU_CONTEXT.get() {
+        cache.invalidate();
+    }
 }
 
 fn init() -> Result<GpuContext, RenderError> {
@@ -67,15 +100,22 @@ fn init() -> Result<GpuContext, RenderError> {
     }))
     .ok_or_else(|| RenderError::Gpu("no compatible GPU adapter found".into()))?;
 
+    let adapter_limits = adapter.limits();
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("filmgrain-device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            // Request the full limits the adapter reports so large outputs aren't capped by the
+            // conservative WebGPU defaults (e.g. 256 MiB max buffer size).
+            required_limits: adapter_limits,
         },
         None,
     ))
     .map_err(|err| RenderError::Gpu(format!("request_device failed: {err}")))?;
+
+    device.on_uncaptured_error(Box::new(|err| {
+        log_uncaptured_error(err);
+    }));
 
     let pixel_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("pixel-wise shader"),
@@ -262,6 +302,7 @@ fn init() -> Result<GpuContext, RenderError> {
         layout: Some(&pixel_pipeline_layout),
         module: &pixel_shader,
         entry_point: "main",
+        compilation_options: Default::default(),
     });
 
     let grain_splat_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -269,6 +310,7 @@ fn init() -> Result<GpuContext, RenderError> {
         layout: Some(&grain_splat_pipeline_layout),
         module: &grain_shader,
         entry_point: "splat",
+        compilation_options: Default::default(),
     });
 
     let grain_reduce_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -276,6 +318,7 @@ fn init() -> Result<GpuContext, RenderError> {
         layout: Some(&grain_reduce_pipeline_layout),
         module: &grain_shader,
         entry_point: "reduce",
+        compilation_options: Default::default(),
     });
 
     Ok(GpuContext {
@@ -296,6 +339,17 @@ pub fn render_pixelwise_gpu(
     params: &Params,
     d: &Derived,
 ) -> Result<Plane, RenderError> {
+    run_with_gpu_error_scope(ctx, "Pixel renderer", || {
+        render_pixelwise_gpu_inner(ctx, lambda, params, d)
+    })
+}
+
+fn render_pixelwise_gpu_inner(
+    ctx: &GpuContext,
+    lambda: &Plane,
+    params: &Params,
+    d: &Derived,
+) -> Result<Plane, RenderError> {
     let offsets = &d.offsets_input;
     if offsets.len() != params.n_samples as usize {
         return Err(RenderError::Gpu(
@@ -307,7 +361,7 @@ pub fn render_pixelwise_gpu(
     let lambda_bytes = bytemuck::cast_slice(lambda.pixels());
     let offsets_bytes = bytemuck::cast_slice(offsets);
     let uniforms_bytes = bytemuck::bytes_of(&uniforms);
-    let out_len = (d.output_width * d.output_height) as usize;
+    let out_len = d.output_width * d.output_height;
     let out_bytes = out_len * std::mem::size_of::<f32>();
 
     let lambda_buffer = ctx
@@ -422,6 +476,17 @@ pub fn render_grainwise_gpu(
     params: &Params,
     d: &Derived,
 ) -> Result<Plane, RenderError> {
+    run_with_gpu_error_scope(ctx, "Grain renderer", || {
+        render_grainwise_gpu_inner(ctx, lambda, params, d)
+    })
+}
+
+fn render_grainwise_gpu_inner(
+    ctx: &GpuContext,
+    lambda: &Plane,
+    params: &Params,
+    d: &Derived,
+) -> Result<Plane, RenderError> {
     let offsets = &d.offsets;
     if offsets.len() != params.n_samples as usize {
         return Err(RenderError::Gpu(
@@ -435,7 +500,7 @@ pub fn render_grainwise_gpu(
     let offsets_bytes = bytemuck::cast_slice(offsets);
     let uniforms_bytes = bytemuck::bytes_of(&uniforms);
 
-    let out_len = (d.output_width * d.output_height) as usize;
+    let out_len = d.output_width * d.output_height;
     let bitset_words = out_len * lanes as usize;
     let bitset_bytes = bitset_words * std::mem::size_of::<u32>();
     let out_bytes = out_len * std::mem::size_of::<f32>();
@@ -627,9 +692,71 @@ fn build_uniforms(params: &Params, derived: &Derived, lanes: u32) -> Uniforms {
 }
 
 fn div_round_up(a: usize, b: u32) -> u32 {
-    ((a as u32) + b - 1) / b
+    (a as u32).div_ceil(b)
 }
 
 fn lanes_for_samples(samples: u32) -> u32 {
-    ((samples + 31) / 32).max(1)
+    samples.div_ceil(32)
+}
+
+fn run_with_gpu_error_scope<T, F>(
+    ctx: &GpuContext,
+    label: &'static str,
+    work: F,
+) -> Result<T, RenderError>
+where
+    F: FnOnce() -> Result<T, RenderError>,
+{
+    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    ctx.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    ctx.device.push_error_scope(wgpu::ErrorFilter::Internal);
+
+    let work_result = work();
+
+    let internal = block_on(ctx.device.pop_error_scope());
+    let out_of_memory = block_on(ctx.device.pop_error_scope());
+    let validation = block_on(ctx.device.pop_error_scope());
+
+    if let Some(err) = validation.or(out_of_memory).or(internal) {
+        return Err(handle_gpu_error(label, err));
+    }
+
+    work_result
+}
+
+fn handle_gpu_error(label: &str, err: wgpu::Error) -> RenderError {
+    let (message, fatal) = describe_gpu_error(label, &err);
+    if fatal {
+        error!("{msg}", msg = &message);
+        invalidate_context();
+    } else {
+        warn!("{msg}", msg = &message);
+    }
+    RenderError::Gpu(message)
+}
+
+fn describe_gpu_error(label: &str, err: &wgpu::Error) -> (String, bool) {
+    match err {
+        wgpu::Error::OutOfMemory { .. } => (
+            format!("{label} ran out of GPU memory. Try lowering the output size or sample count."),
+            true,
+        ),
+        wgpu::Error::Validation { description, .. } => {
+            (format!("{label} validation error: {description}"), false)
+        }
+        wgpu::Error::Internal { description, .. } => (
+            format!("{label} hit an internal GPU error: {description}"),
+            true,
+        ),
+    }
+}
+
+fn log_uncaptured_error(err: wgpu::Error) {
+    let (message, fatal) = describe_gpu_error("wgpu", &err);
+    if fatal {
+        error!("{msg}", msg = &message);
+        invalidate_context();
+    } else {
+        warn!("{msg}", msg = &message);
+    }
 }

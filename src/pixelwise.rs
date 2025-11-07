@@ -6,8 +6,14 @@ use rayon::slice::ParallelSliceMut;
 use crate::model::{Derived, Plane};
 use crate::params::Params;
 use crate::rng;
+use crate::{RenderError, RenderResult};
 
-pub fn render_pixelwise(lambda: &Plane, params: &Params, derived: &Derived) -> Plane {
+pub fn render_pixelwise(
+    lambda: &Plane,
+    params: &Params,
+    derived: &Derived,
+    cancel: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> RenderResult<Plane> {
     let out_w = derived.output_width;
     let out_h = derived.output_height;
     let mut pixels = vec![0.0f32; out_w * out_h];
@@ -15,11 +21,14 @@ pub fn render_pixelwise(lambda: &Plane, params: &Params, derived: &Derived) -> P
     let inv_zoom = 1.0 / params.zoom;
     let offsets_input = &derived.offsets_input;
 
-    pixels
+    let cancel = cancel;
+    let render_result: Result<(), RenderError> = pixels
         .par_chunks_mut(out_w)
         .enumerate()
-        .for_each(|(y, row)| {
-            let y = y as usize;
+        .try_for_each(move |(y, row)| {
+            if cancel.map_or(false, |check| check()) {
+                return Err(RenderError::Cancelled);
+            }
             for (x, value) in row.iter_mut().enumerate() {
                 let mut sum = 0.0f32;
                 for offset in offsets_input {
@@ -29,9 +38,11 @@ pub fn render_pixelwise(lambda: &Plane, params: &Params, derived: &Derived) -> P
                 }
                 *value = sum * inv_samples;
             }
+            Ok(())
         });
+    render_result?;
 
-    Plane::from_vec(out_w, out_h, pixels)
+    Ok(Plane::from_vec(out_w, out_h, pixels))
 }
 
 fn evaluate_indicator(xg: f32, yg: f32, lambda: &Plane, params: &Params, derived: &Derived) -> f32 {

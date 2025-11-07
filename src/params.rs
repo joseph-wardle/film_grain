@@ -68,6 +68,29 @@ pub struct Params {
 }
 
 #[derive(Debug, Clone)]
+pub struct ParamsBuilder {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub radius_dist: RadiusDist,
+    pub radius_mean: f32,
+    pub radius_stddev: f32,
+    pub zoom: f32,
+    pub sigma_px: f32,
+    pub n_samples: u32,
+    pub algo: Algo,
+    pub max_radius: MaxRadius,
+    pub cell_delta: Option<f32>,
+    pub color_mode: ColorMode,
+    pub roi: Option<Roi>,
+    pub size: Option<(u32, Option<u32>)>,
+    pub seed: u64,
+    pub dry_run: bool,
+    pub explain: bool,
+    pub device: Device,
+    pub output_format: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CliArgs {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
@@ -115,43 +138,86 @@ impl fmt::Display for ParamsError {
 
 impl std::error::Error for ParamsError {}
 
+impl ParamsBuilder {
+    pub fn build(self) -> ParamsResult<Params> {
+        let radius_mean = ensure_positive(self.radius_mean, "radius")?;
+        let radius_stddev_input = ensure_non_negative(self.radius_stddev, "radius-stddev")?;
+        let zoom = ensure_positive(self.zoom, "zoom")?;
+        let sigma_px = ensure_positive(self.sigma_px, "sigma")?;
+        let n_samples = self.n_samples.max(1);
+        let max_radius = ensure_max_radius(self.max_radius)?;
+        let roi = ensure_roi(self.roi)?;
+        let size = ensure_size(self.size)?;
+        let cell_delta = ensure_cell_delta(self.cell_delta, radius_mean)?;
+
+        let (radius_stddev, radius_log_mu, radius_log_sigma) =
+            derive_radius_parameters(radius_mean, radius_stddev_input, self.radius_dist)?;
+
+        Ok(Params {
+            input_path: self.input_path,
+            output_path: self.output_path,
+            radius_dist: self.radius_dist,
+            radius_mean,
+            radius_stddev,
+            radius_log_mu,
+            radius_log_sigma,
+            zoom,
+            sigma_px,
+            n_samples,
+            algo: self.algo,
+            max_radius,
+            cell_delta,
+            color_mode: self.color_mode,
+            roi,
+            size,
+            seed: self.seed,
+            dry_run: self.dry_run,
+            explain: self.explain,
+            device: self.device,
+            output_format: self.output_format,
+        })
+    }
+}
+
+impl TryFrom<CliArgs> for ParamsBuilder {
+    type Error = ParamsError;
+
+    fn try_from(args: CliArgs) -> ParamsResult<Self> {
+        let radius_mean = to_positive_f32(args.radius_mean, "radius")?;
+        let radius_stddev = to_non_negative_f32(args.radius_stddev, "radius-stddev")?;
+        let zoom = to_positive_f32(args.zoom, "zoom")?;
+        let sigma_px = to_positive_f32(args.sigma_px, "sigma")?;
+        let cell_delta = parse_cell_delta(&args.cell, radius_mean)?;
+        let max_radius = parse_max_radius(&args.max_radius)?;
+        let roi = parse_roi(args.roi.as_deref())?;
+        let size = parse_size(args.size.as_deref())?;
+
+        Ok(Self {
+            input_path: args.input_path,
+            output_path: args.output_path,
+            radius_dist: args.radius_dist,
+            radius_mean,
+            radius_stddev,
+            zoom,
+            sigma_px,
+            n_samples: args.n_samples,
+            algo: args.algo,
+            max_radius,
+            cell_delta,
+            color_mode: args.color_mode,
+            roi,
+            size,
+            seed: args.seed as u64,
+            dry_run: args.dry_run,
+            explain: args.explain,
+            device: args.device,
+            output_format: args.output_format,
+        })
+    }
+}
+
 pub fn build_params(args: CliArgs) -> ParamsResult<Params> {
-    let radius_mean = to_positive_f32(args.radius_mean, "radius")?;
-    let radius_stddev = to_non_negative_f32(args.radius_stddev, "radius-stddev")?;
-    let zoom = to_positive_f32(args.zoom, "zoom")?;
-    let sigma_px = to_positive_f32(args.sigma_px, "sigma")?;
-
-    let (radius_stddev, radius_log_mu, radius_log_sigma) =
-        derive_radius_parameters(radius_mean, radius_stddev, args.radius_dist)?;
-
-    let cell_delta = parse_cell_delta(&args.cell, radius_mean)?;
-    let max_radius = parse_max_radius(&args.max_radius)?;
-    let roi = parse_roi(args.roi.as_deref())?;
-    let size = parse_size(args.size.as_deref())?;
-
-    Ok(Params {
-        input_path: args.input_path,
-        output_path: args.output_path,
-        radius_dist: args.radius_dist,
-        radius_mean,
-        radius_stddev,
-        radius_log_mu,
-        radius_log_sigma,
-        zoom,
-        sigma_px,
-        n_samples: args.n_samples.max(1),
-        algo: args.algo,
-        max_radius,
-        cell_delta,
-        color_mode: args.color_mode,
-        roi,
-        size,
-        seed: args.seed as u64,
-        dry_run: args.dry_run,
-        explain: args.explain,
-        device: args.device,
-        output_format: args.output_format,
-    })
+    ParamsBuilder::try_from(args)?.build()
 }
 
 fn derive_radius_parameters(
@@ -192,6 +258,103 @@ pub fn default_cell_delta(radius_mean: f32) -> f32 {
     }
     let inv = (1.0 / radius_mean).ceil().max(1.0);
     1.0 / inv
+}
+
+fn ensure_positive(value: f32, field: &'static str) -> ParamsResult<f32> {
+    if !value.is_finite() {
+        return Err(ParamsError::new(field, "value must be finite"));
+    }
+    if value <= 0.0 {
+        return Err(ParamsError::new(field, "value must be greater than 0"));
+    }
+    Ok(value)
+}
+
+fn ensure_non_negative(value: f32, field: &'static str) -> ParamsResult<f32> {
+    if !value.is_finite() {
+        return Err(ParamsError::new(field, "value must be finite"));
+    }
+    if value < 0.0 {
+        return Err(ParamsError::new(field, "value must be >= 0"));
+    }
+    Ok(value)
+}
+
+fn ensure_cell_delta(value: Option<f32>, radius_mean: f32) -> ParamsResult<Option<f32>> {
+    match value {
+        Some(delta) => {
+            if !delta.is_finite() {
+                return Err(ParamsError::new("cell", "cell size must be finite"));
+            }
+            if delta <= 0.0 {
+                return Err(ParamsError::new("cell", "cell size must be > 0"));
+            }
+            Ok(Some(delta))
+        }
+        None => Ok(Some(default_cell_delta(radius_mean))),
+    }
+}
+
+fn ensure_max_radius(spec: MaxRadius) -> ParamsResult<MaxRadius> {
+    match spec {
+        MaxRadius::Absolute(value) => {
+            if !value.is_finite() {
+                return Err(ParamsError::new(
+                    "max-radius",
+                    "absolute radius must be finite",
+                ));
+            }
+            if value <= 0.0 {
+                return Err(ParamsError::new(
+                    "max-radius",
+                    "absolute radius must be > 0",
+                ));
+            }
+            Ok(MaxRadius::Absolute(value))
+        }
+        MaxRadius::Quantile(value) => {
+            if !value.is_finite() {
+                return Err(ParamsError::new("max-radius", "quantile must be finite"));
+            }
+            if !(0.0 < value && value < 1.0) {
+                return Err(ParamsError::new(
+                    "max-radius",
+                    "quantile must lie in the open interval (0,1)",
+                ));
+            }
+            Ok(MaxRadius::Quantile(value))
+        }
+    }
+}
+
+fn ensure_roi(roi: Option<Roi>) -> ParamsResult<Option<Roi>> {
+    if let Some(r) = roi {
+        if r.x1 <= r.x0 || r.y1 <= r.y0 {
+            return Err(ParamsError::new(
+                "roi",
+                "roi end must be greater than start (exclusive bounds)",
+            ));
+        }
+        Ok(Some(r))
+    } else {
+        Ok(None)
+    }
+}
+
+fn ensure_size(size: Option<(u32, Option<u32>)>) -> ParamsResult<Option<(u32, Option<u32>)>> {
+    if let Some((width, maybe_height)) = size {
+        if width == 0 {
+            return Err(ParamsError::new("size", "output width must be > 0"));
+        }
+        if let Some(height) = maybe_height
+            && height == 0
+        {
+            return Err(ParamsError::new("size", "output height must be > 0"));
+        }
+        Ok(Some((width, maybe_height)))
+    } else {
+        Ok(None)
+    }
 }
 
 fn to_positive_f32(value: f64, field: &'static str) -> ParamsResult<f32> {

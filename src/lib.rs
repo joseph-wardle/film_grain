@@ -1,6 +1,7 @@
 use choose::choose_algorithm;
 use color::Workspace;
 use grainwise::render_grainwise;
+use image::RgbImage;
 use model::{Derived, derive_common, lambda_plane, normalize_plane};
 use pixelwise::render_pixelwise;
 use std::fs;
@@ -16,9 +17,10 @@ mod pixelwise;
 mod rng;
 pub mod wgpu;
 
+pub use color::InputImage;
 pub use params::{
-    Algo, CliArgs, ColorMode, Device, MaxRadius, Params, ParamsError, ParamsResult, RadiusDist,
-    Roi, build_params, default_cell_delta,
+    Algo, CliArgs, ColorMode, Device, MaxRadius, Params, ParamsBuilder, ParamsError, ParamsResult,
+    RadiusDist, Roi, build_params, default_cell_delta,
 };
 
 pub type RenderResult<T> = Result<T, RenderError>;
@@ -35,6 +37,8 @@ pub enum RenderError {
     Gpu(String),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
+    #[error("cancelled")]
+    Cancelled,
     #[error("{0}")]
     Message(String),
 }
@@ -51,50 +55,134 @@ pub struct RenderStats {
 }
 
 pub fn render(params: &Params) -> RenderResult<RenderStats> {
-    let mut workspace = Workspace::load(params)?;
-    let input_size = workspace.dimensions();
-    let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
-    let algorithm = choose_algorithm(params, &derived);
+    let (image, stats) = render_to_image(params)?;
+
+    if let Some(parent) = params.output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let format = resolve_format(params)?;
+    image
+        .save_with_format(&params.output_path, format)
+        .map_err(RenderError::from)?;
+
+    Ok(stats)
+}
+
+pub fn render_to_image(params: &Params) -> RenderResult<(RgbImage, RenderStats)> {
+    let workspace = Workspace::load(params)?;
+    render_from_workspace_impl(workspace, params, None)
+}
+
+pub fn render_with_input_image(
+    input: &InputImage,
+    params: &Params,
+) -> RenderResult<(RgbImage, RenderStats)> {
+    let workspace = input.to_workspace();
+    render_from_workspace_impl(workspace, params, None)
+}
+
+pub fn render_with_input_image_cancelable(
+    input: &InputImage,
+    params: &Params,
+    cancel: &(dyn Fn() -> bool + Send + Sync),
+) -> RenderResult<(RgbImage, RenderStats)> {
+    let workspace = input.to_workspace();
+    render_from_workspace_impl(workspace, params, Some(cancel))
+}
+
+pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
+    let workspace = Workspace::load(params)?;
+    dry_run_for_workspace(&workspace, params, None)
+}
+
+pub fn dry_run_with_input_image(input: &InputImage, params: &Params) -> RenderResult<RenderStats> {
+    let workspace = input.to_workspace();
+    dry_run_for_workspace(&workspace, params, None)
+}
+
+pub fn dry_run_with_input_image_cancelable(
+    input: &InputImage,
+    params: &Params,
+    cancel: &(dyn Fn() -> bool + Send + Sync),
+) -> RenderResult<RenderStats> {
+    let workspace = input.to_workspace();
+    dry_run_for_workspace(&workspace, params, Some(cancel))
+}
+
+type CancelCheck<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
+
+fn check_cancel(cancel: CancelCheck<'_>) -> RenderResult<()> {
+    if let Some(check) = cancel {
+        if check() {
+            return Err(RenderError::Cancelled);
+        }
+    }
+    Ok(())
+}
+
+fn dry_run_for_workspace(
+    workspace: &Workspace,
+    params: &Params,
+    cancel: CancelCheck<'_>,
+) -> RenderResult<RenderStats> {
+    let (derived, algorithm) = derive_for_workspace_impl(workspace, params, cancel)?;
+    Ok(make_stats(params, &derived, algorithm))
+}
+
+fn render_from_workspace_impl(
+    mut workspace: Workspace,
+    params: &Params,
+    cancel: CancelCheck<'_>,
+) -> RenderResult<(RgbImage, RenderStats)> {
+    check_cancel(cancel)?;
+    let (derived, algorithm) = derive_for_workspace_impl(&workspace, params, cancel)?;
     let gpu_ctx = match params.device {
         Device::Gpu => Some(wgpu::context()?),
         Device::Cpu => None,
     };
 
     workspace.for_each_plane(|plane, _| {
+        check_cancel(cancel)?;
         let (normalized, _) = normalize_plane(plane);
         let lambda = lambda_plane(&normalized, derived.inv_e_pi_r2);
+        check_cancel(cancel)?;
         match (params.device, algorithm) {
-            (Device::Cpu, Algo::Pixel) => Ok(render_pixelwise(&lambda, params, &derived)),
-            (Device::Cpu, Algo::Grain) => Ok(render_grainwise(&lambda, params, &derived)),
+            (Device::Cpu, Algo::Pixel) => render_pixelwise(&lambda, params, &derived, cancel),
+            (Device::Cpu, Algo::Grain) => render_grainwise(&lambda, params, &derived, cancel),
             (Device::Gpu, Algo::Pixel) => {
-                let ctx = gpu_ctx.expect("gpu context initialized");
+                check_cancel(cancel)?;
+                let ctx = gpu_ctx.as_ref().expect("gpu context initialized").as_ref();
                 wgpu::render_pixelwise_gpu(ctx, &lambda, params, &derived)
             }
             (Device::Gpu, Algo::Grain) => {
-                let ctx = gpu_ctx.expect("gpu context initialized");
+                check_cancel(cancel)?;
+                let ctx = gpu_ctx.as_ref().expect("gpu context initialized").as_ref();
                 wgpu::render_grainwise_gpu(ctx, &lambda, params, &derived)
             }
             (_, Algo::Auto) => unreachable!("auto selection resolved before rendering"),
         }
     })?;
 
-    if let Some(parent) = params.output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let format = resolve_format(params)?;
-    workspace.save(&params.output_path, format)?;
-
-    Ok(make_stats(params, &derived, algorithm))
+    check_cancel(cancel)?;
+    let stats = make_stats(params, &derived, algorithm);
+    check_cancel(cancel)?;
+    let image = workspace.into_rgb_image()?;
+    Ok((image, stats))
 }
 
-pub fn dry_run(params: &Params) -> RenderResult<RenderStats> {
-    let workspace = Workspace::load(params)?;
+fn derive_for_workspace_impl(
+    workspace: &Workspace,
+    params: &Params,
+    cancel: CancelCheck<'_>,
+) -> RenderResult<(Derived, Algo)> {
+    check_cancel(cancel)?;
     let input_size = workspace.dimensions();
     let derived = derive_common(params, input_size).map_err(RenderError::Message)?;
+    check_cancel(cancel)?;
     let algorithm = choose_algorithm(params, &derived);
-    Ok(make_stats(params, &derived, algorithm))
+    Ok((derived, algorithm))
 }
 
 fn resolve_format(params: &Params) -> RenderResult<image::ImageFormat> {

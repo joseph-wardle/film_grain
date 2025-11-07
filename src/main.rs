@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use film_grain::{Algo, CliArgs, ColorMode, Device, RadiusDist, RenderStats};
 
@@ -165,7 +165,7 @@ struct Cli {
         long,
         value_name = "DEVICE",
         value_enum,
-        default_value_t = Device::Gpu,
+        default_value_t = Device::Cpu,
         help_heading = "DEVICE",
         help = "'cpu' | 'gpu'"
     )]
@@ -246,7 +246,7 @@ struct Cli {
     seed: u32,
 }
 
-fn print_stats(stats: &RenderStats, explain: bool, dry_run: bool, output: &PathBuf) {
+fn print_stats(stats: &RenderStats, explain: bool, dry_run: bool, output: &Path) {
     if dry_run {
         println!(
             "dry-run: {:?} algorithm, input {}x{} → output {}x{}, samples {}",
