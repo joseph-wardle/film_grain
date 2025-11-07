@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+#[cfg(target_arch = "wasm32")]
+use eframe::egui;
+#[cfg(not(target_arch = "wasm32"))]
 use eframe::{egui, wgpu};
 use futures::channel::oneshot;
 use futures::task::noop_waker_ref;
@@ -62,10 +65,15 @@ pub async fn start() -> Result<(), JsValue> {
         .start(
             "canvas",
             eframe::WebOptions::default(),
-            Box::new(|cc| Box::new(FilmGrainViewer::new(cc))),
+            Box::new(|cc| Ok(Box::new(FilmGrainViewer::new(cc)))),
         )
         .await?;
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    // wasm-bindgen calls `start`; this stub satisfies the binary entry requirement.
 }
 
 struct FilmGrainViewer {
