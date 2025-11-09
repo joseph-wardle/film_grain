@@ -114,10 +114,10 @@ pub fn dry_run_with_input_image_cancelable(
 type CancelCheck<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
 
 fn check_cancel(cancel: CancelCheck<'_>) -> RenderResult<()> {
-    if let Some(check) = cancel {
-        if check() {
-            return Err(RenderError::Cancelled);
-        }
+    if let Some(check) = cancel
+        && check()
+    {
+        return Err(RenderError::Cancelled);
     }
     Ok(())
 }

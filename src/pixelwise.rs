@@ -21,12 +21,11 @@ pub fn render_pixelwise(
     let inv_zoom = 1.0 / params.zoom;
     let offsets_input = &derived.offsets_input;
 
-    let cancel = cancel;
     let render_result: Result<(), RenderError> = pixels
         .par_chunks_mut(out_w)
         .enumerate()
         .try_for_each(move |(y, row)| {
-            if cancel.map_or(false, |check| check()) {
+            if cancel.is_some_and(|check| check()) {
                 return Err(RenderError::Cancelled);
             }
             for (x, value) in row.iter_mut().enumerate() {

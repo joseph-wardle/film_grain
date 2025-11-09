@@ -16,7 +16,10 @@ use rand::Rng;
 use rfd::FileDialog;
 
 fn main() -> eframe::Result<()> {
-    let mut options = eframe::NativeOptions::default();
+    let mut options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
     options.renderer = eframe::Renderer::Wgpu;
     // Keep eframe on the modern GPU path (Vulkan/Metal/DX12) to avoid the legacy GL stack.
     options.wgpu_options.supported_backends = wgpu::Backends::PRIMARY;
