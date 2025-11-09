@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "film_grain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "clap",
